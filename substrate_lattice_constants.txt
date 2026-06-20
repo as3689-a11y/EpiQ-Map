@@ -1,0 +1,22 @@
+# Substrate / film lattice constants for peak indexing (compute_U_from_substrate)
+# Format:  Formula  a  b  c  alpha  beta  gamma
+#   a, b, c in Angstrom; alpha, beta, gamma in degrees.
+#   Separators may be whitespace, commas, or '=' (see load_lattice docstring).
+#   '#' starts a comment.
+
+# LaAlO3: rhombohedral (R-3c) at RT, indexed here in its pseudocubic
+# perovskite setting. a_pc ~ 3.79 A; the rhombohedral angle deviates from
+# 90 deg by only ~0.1 deg, negligible for RSM indexing.
+LaAlO3   3.79  3.79  3.79  90  90  90
+
+# Common perovskite substrates (pseudocubic), for convenience
+SrTiO3   3.905 3.905 3.905 90  90  90
+LSAT     3.868 3.868 3.868 90  90  90
+NdGaO3   3.864 3.864 3.864 90  90  90
+DyScO3   3.944 3.944 3.944 90  90  90
+TbScO3   3.960 3.960 3.960 90  90  90
+SrTa2S5  3.306 3.306 24.276 90 90 120
+
+# TiO2 is polymorphic; this unqualified entry uses room-temperature rutile
+# (tetragonal P42/mnm). Use a separately named entry for anatase or brookite.
+TiO2     4.5936 4.5936 2.9587 90 90 90
