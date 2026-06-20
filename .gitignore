@@ -17,6 +17,14 @@ dist/
 *.swp
 .DS_Store
 
+# Compiled HKL kernel -- CPU-specific; build from hklBen.c + Makefile on the
+# target machine (see HKL_Convert/README.md). Do not ship a prebuilt binary.
+*.so
+*.o
+
+# Backup copies
+*_backup.py
+
 # Data / outputs (not source) -- uncomment if you ever drop these here
 # *.nxs
 # *.npz

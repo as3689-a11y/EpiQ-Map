@@ -833,8 +833,10 @@ def default_opts():
         'command_list_name': f'command_list_{run_label}.txt',
         'source_command_list_name': 'command_list_Andrej.txt',
         'make_log_files': os.path.join(here, 'make_log_files.py'),
-        'autorsm': ('/home/tfuchs/id4baux/2026-2/sarker-4910-a/'
-                    'processed/hklconv_clean/autoRSM.py'),
+        # autoRSM ships bundled in HKL_Convert/ so the monitor is self-contained
+        # wherever the repo is deployed; override with --autorsm if it lives
+        # elsewhere on the beamtime server. The python interpreter is separate.
+        'autorsm': os.path.join(here, 'HKL_Convert', 'autoRSM.py'),
         'lattice_file': os.path.join(here, 'substrate_lattice_constants.txt'),
     }
 

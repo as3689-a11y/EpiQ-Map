@@ -1,0 +1,21 @@
+# Config template for autoRSM.py -- copy, edit paths, run:
+#   python autoRSM.py this_file.txt
+# Lines starting with '#' and blank lines are ignored.
+
+PONI File: /nfs/chess/id4baux/.../geometry.poni
+Material: V2O3
+Sample Name: NW220910B
+Scan Number: 12
+Scan List: [12, 13, 14]
+Theta Scan Number: None
+Theta Scan List: []
+Temperature: 150
+Mask File: /nfs/chess/id4baux/.../mask.edf
+Specfile: /nfs/chess/raw/.../specfile
+Temperature Directory: /nfs/chess/raw/.../T150/
+Image Directory: /nfs/chess/raw/.../images/
+Output Directory: /nfs/chess/id4baux/.../output/
+
+# Optional: provide BOTH for an indexed (H, K, L) map, omit both for lab-frame Q.
+# UB: [[0.7199, -0.6941, 0.0002], [0.6941, 0.7198, -0.0121], [0.0084, 0.0088, 0.9999]]
+# Substrate Lattice Params: (4.95, 4.95, 14.0)
