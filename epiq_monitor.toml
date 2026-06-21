@@ -15,7 +15,8 @@ poni_file  = "/nfs/chess/id4baux/2024-2/gregory-3864-b/calibrations/ceO2_15keV.p
 mask_file  = "/nfs/chess/id4baux/2024-2/gregory-3864-b/calibrations/mask.edf"
 
 # --- Tools ---
-# Python interpreter that runs autoRSM (often a beamtime/user env, NOT this one).
+# Interpreter that runs autoRSM. A bare name like "python" uses whatever is on
+# PATH (the active environment); give a full path to pin a specific interpreter.
 python  = "python"
 # autoRSM script; bundled in the repo by default.
 autorsm = "HKL_Convert/autoRSM.py"

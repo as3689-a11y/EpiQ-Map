@@ -833,11 +833,14 @@ def load_config(path=None):
     unknown = set(data) - set(default_opts())
     if unknown:
         raise ValueError(f"unknown config keys in {path}: {sorted(unknown)}")
-    # Resolve relative path-like values against the repo directory.
+    # Resolve relative path-like values against the repo directory. A bare
+    # command name (no path separator, e.g. "python") is left alone so it is
+    # found on PATH -- only things that look like relative paths are joined.
     for key in ('python', 'autorsm', 'make_log_files', 'lattice_file',
                 'base_dir', 'spec_dir', 'output_dir', 'poni_file', 'mask_file'):
         val = data.get(key)
-        if isinstance(val, str) and val and not os.path.isabs(val):
+        if (isinstance(val, str) and val and not os.path.isabs(val)
+                and os.sep in val):
             data[key] = os.path.join(here, val)
     return data
 
