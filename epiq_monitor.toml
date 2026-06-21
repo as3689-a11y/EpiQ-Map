@@ -16,7 +16,7 @@ mask_file  = "/nfs/chess/id4baux/2024-2/gregory-3864-b/calibrations/mask.edf"
 
 # --- Tools ---
 # Python interpreter that runs autoRSM (often a beamtime/user env, NOT this one).
-python  = "/nfs/chess/user/YOURUSER/anaconda3/bin/python"
+python  = "python"
 # autoRSM script; bundled in the repo by default.
 autorsm = "HKL_Convert/autoRSM.py"
 
