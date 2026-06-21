@@ -168,6 +168,48 @@ def estimated_megabytes(shape: tuple[int, int, int], working_factor: float = 8.0
     return float(np.prod(shape, dtype=np.int64) * 4 * working_factor / 2**20)
 
 
+def project_image(data: np.ndarray, source_axes: tuple[np.ndarray, ...],
+                  U: np.ndarray,
+                  inplane_bounds: tuple[tuple[float, float], tuple[float, float]],
+                  inplane_shape: tuple[int, int],
+                  thin_center: float, thin_thickness: float, thin_samples: int,
+                  reduction: str = "mean", order: int = 1
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Interpolate a thin oriented slab and collapse it to a 2D image.
+
+    Resamples the source onto an (N_h, N_v, N_thin) grid in the U-aligned
+    frame -- ``inplane_bounds``/``inplane_shape`` give the horizontal and
+    vertical image axes, and the third (slab) axis spans ``thin_thickness``
+    around ``thin_center`` with ``thin_samples`` points -- then reduces over
+    the slab axis with nanmean (default) or nansum. ``U`` already encodes the
+    chosen orientation (and UB if plotting in RLU), exactly like the 3D path.
+
+    Returns (image, h_axis, v_axis): image has shape (N_v, N_h) so it displays
+    with the horizontal axis as columns; the axes are the physical coordinates.
+    """
+    if reduction not in ("sum", "mean"):
+        raise ValueError("reduction must be 'sum' or 'mean'")
+    if int(thin_samples) < 1:
+        raise ValueError("thin_samples must be at least 1")
+    (h_lo, h_hi), (v_lo, v_hi) = inplane_bounds
+    n_h, n_v = int(inplane_shape[0]), int(inplane_shape[1])
+    if n_h < 1 or n_v < 1:
+        raise ValueError("in-plane sample counts must be positive")
+    half = float(thin_thickness) / 2.0
+    h_axis = np.linspace(h_lo, h_hi, n_h, dtype=float)
+    v_axis = np.linspace(v_lo, v_hi, n_v, dtype=float)
+    thin_axis = (np.array([float(thin_center)]) if int(thin_samples) == 1
+                 else np.linspace(thin_center - half, thin_center + half,
+                                  int(thin_samples), dtype=float))
+    # transform_slab samples at U @ (a, b, c) on the grid axes (a, b, c).
+    volume = transform_slab(data, *source_axes, U, h_axis, v_axis, thin_axis,
+                            order=order)
+    func = np.nansum if reduction == "sum" else np.nanmean
+    slab = func(volume, axis=2)                      # (n_h, n_v)
+    image = np.asarray(slab, dtype=np.float32).T     # (n_v, n_h) for display
+    return image, h_axis, v_axis
+
+
 def intensity_view(volume: np.ndarray, mode: str) -> np.ndarray:
     data = np.nan_to_num(np.asarray(volume, dtype=np.float32), nan=0.0,
                          posinf=0.0, neginf=0.0)
@@ -252,6 +294,39 @@ def load_region(path: str) -> RegionModel:
         source = str(saved["source"].item()) if "source" in saved else ""
         return RegionModel(saved["volume"], (saved["H"], saved["K"], saved["L"]),
                            saved["U"], source, settings)
+
+
+def save_image(path: str, image: np.ndarray, h_axis: np.ndarray,
+               v_axis: np.ndarray, cmap: str = "inferno",
+               labels: tuple[str, str] = ("Q1", "Q2"), unit: str = "A^-1",
+               dpi: int = 200) -> None:
+    """Write a 2D RSM image to PNG/TIFF (data-based, with axes and colorbar).
+
+    The intensity has already had its display transform applied. ``h_axis`` /
+    ``v_axis`` are the physical horizontal/vertical coordinates, drawn as the
+    plot extent so the figure is in Q (or RLU) units, not pixels.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    extent = (float(h_axis[0]), float(h_axis[-1]),
+              float(v_axis[0]), float(v_axis[-1]))
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(image, origin="lower", aspect="auto", cmap=cmap,
+                   extent=extent, interpolation="nearest")
+    ax.set_xlabel(f"{labels[0]} ({unit})")
+    ax.set_ylabel(f"{labels[1]} ({unit})")
+    fig.colorbar(im, ax=ax, label="intensity")
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+
+
+def save_image_npz(path: str, image: np.ndarray, h_axis: np.ndarray,
+                   v_axis: np.ndarray, settings: dict | None = None) -> None:
+    """Save the raw 2D image array plus its physical axes for regenerating."""
+    np.savez_compressed(path, image=image, h_axis=h_axis, v_axis=v_axis,
+                        settings=np.array(settings or {}, dtype=object))
 
 
 def save_csv(path: str, x: np.ndarray, y: np.ndarray, x_label: str) -> None:
@@ -462,7 +537,7 @@ def _install_command() -> str:
     return "conda install -n viz -c conda-forge napari pyqt pyqtgraph"
 
 
-def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> tuple[Any, Any]:
+def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> tuple[Any, Any, Any]:
     """Build Qt docks lazily so numerical helpers work without napari/Qt."""
     from napari.qt.threading import thread_worker
     from qtpy.QtCore import Qt
@@ -840,7 +915,146 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
             if self.plot.sceneBoundingRect().contains(pos):
                 point=self.plot.plotItem.vb.mapSceneToView(pos); self.cursor.setText(f"x={point.x():.6g} {self.units()}, I={point.y():.6g}")
 
-    return RegionDock(), LineCutDock()
+    class ImageDock(QWidget):
+        """Make and export a 2D RSM image: a thin oriented slab reduced to a
+        Q1xQ2 plane, separate from the interactive 3D region."""
+
+        def __init__(self, region: Any) -> None:
+            super().__init__()
+            self.region = region
+            self.image = None                 # (n_v, n_h) float array
+            self.h_axis = None
+            self.v_axis = None
+            self.unit = "A^-1"
+            layout = QVBoxLayout(self)
+            box = QGroupBox("Oriented image axes (direction + range)")
+            grid = QGridLayout(box)
+            for col, header in enumerate(("Axis", "Direction", "Q min", "Q max", "Samples")):
+                grid.addWidget(QLabel(header), 0, col)
+            # Two in-plane axes (horizontal, vertical) + the thin slab axis.
+            self.dirs = []; self.lims = []; self.counts = []
+            rows = (("Q1 (horizontal)", "[1 0 0]", (-3.0, 3.0), 200),
+                    ("Q2 (vertical)",   "[0 1 0]", (-3.0, 3.0), 200))
+            for r, (name, dtext, (lo0, hi0), n0) in enumerate(rows, start=1):
+                d = QLineEdit(dtext); lo = QDoubleSpinBox(); hi = QDoubleSpinBox(); n = QSpinBox()
+                for b in (lo, hi): b.setRange(-1e6, 1e6); b.setDecimals(2)
+                lo.setValue(lo0); hi.setValue(hi0); n.setRange(1, 10000); n.setValue(n0)
+                grid.addWidget(QLabel(name), r, 0); grid.addWidget(d, r, 1)
+                grid.addWidget(lo, r, 2); grid.addWidget(hi, r, 3); grid.addWidget(n, r, 4)
+                self.dirs.append(d); self.lims.append((lo, hi)); self.counts.append(n)
+            layout.addWidget(box)
+            # Out-of-plane slab: direction + center + thickness + N points.
+            slab = QGroupBox("Integration slab (out-of-plane)")
+            sform = QFormLayout(slab)
+            self.slab_dir = QLineEdit("[0 0 1]")
+            self.slab_center = QDoubleSpinBox(); self.slab_center.setRange(-1e6, 1e6); self.slab_center.setDecimals(3); self.slab_center.setValue(0.0)
+            self.slab_thick = QDoubleSpinBox(); self.slab_thick.setRange(0, 1e6); self.slab_thick.setDecimals(3); self.slab_thick.setValue(0.1)
+            self.slab_n = QSpinBox(); self.slab_n.setRange(1, 10000); self.slab_n.setValue(5)
+            sform.addRow("Direction", self.slab_dir)
+            sform.addRow("Center", self.slab_center)
+            sform.addRow("Thickness", self.slab_thick)
+            sform.addRow("Samples", self.slab_n)
+            layout.addWidget(slab)
+            # Reduce / intensity / colormap / RLU.
+            opts = QHBoxLayout()
+            self.reduce = QComboBox(); self.reduce.addItems(["mean", "sum"])
+            self.mode = QComboBox(); self.mode.addItems(["Linear", "log1p", "log10(I + 1)"])
+            self.cmap = QComboBox(); self.cmap.setEditable(True)
+            self.cmap.addItems(["inferno", "viridis", "plasma", "magma", "turbo",
+                                "jet", "Spectral", "coolwarm", "gray"])
+            self.rlu = QCheckBox("RLU")
+            self.rlu.setToolTip("Sample at U.B*.x so axes are in hkl. Needs Calculate U.")
+            opts.addWidget(QLabel("Reduce")); opts.addWidget(self.reduce)
+            opts.addWidget(QLabel("Intensity")); opts.addWidget(self.mode)
+            opts.addWidget(QLabel("Colormap")); opts.addWidget(self.cmap)
+            opts.addWidget(self.rlu)
+            layout.addLayout(opts)
+            self.use_region = QPushButton("Copy orientation from region")
+            self.use_region.clicked.connect(self.copy_orientation)
+            layout.addWidget(self.use_region)
+            buttons = QHBoxLayout()
+            self.gen = QPushButton("Generate image"); self.gen.clicked.connect(self.generate)
+            self.export = QPushButton("Export image..."); self.export.clicked.connect(self.export_image)
+            self.save_npz = QCheckBox("also .npz"); self.save_npz.setChecked(True)
+            buttons.addWidget(self.gen); buttons.addWidget(self.export); buttons.addWidget(self.save_npz)
+            layout.addLayout(buttons)
+            self.status = QLabel("Ready"); self.status.setWordWrap(True); layout.addWidget(self.status)
+
+        def copy_orientation(self) -> None:
+            q1, q2, q3 = (format_direction(d) for d in self.region.read_orientation())
+            self.dirs[0].setText(q1); self.dirs[1].setText(q2); self.slab_dir.setText(q3)
+            self.status.setText("Copied orientation from region panel")
+
+        def _oriented_u(self):
+            # in-plane h, v + slab -> volume-axis directions for transform_slab.
+            h = parse_direction(self.dirs[0].text())
+            v = parse_direction(self.dirs[1].text())
+            s = parse_direction(self.slab_dir.text())
+            rlu = self.rlu.isChecked()
+            if rlu and controller.Bstar is None:
+                raise ValueError("RLU needs a substrate cell; run Calculate U first.")
+            base = controller.U @ controller.Bstar if rlu else controller.U
+            self.unit = "rlu" if rlu else "A^-1"
+            return oriented_u_matrix(base, h, v, s), (h, v, s)
+
+        def generate(self) -> None:
+            try:
+                sources = self.region._selected_sources()
+                if not sources: raise ValueError("select a .nxs source file in the region panel")
+                if controller.needs_reload(sources):
+                    self.status.setText("Loading source data..."); QApplication.processEvents()
+                    controller.load_source(sources)
+                U, dirs = self._oriented_u()
+                bounds = ((self.lims[0][0].value(), self.lims[0][1].value()),
+                          (self.lims[1][0].value(), self.lims[1][1].value()))
+                shape = (self.counts[0].value(), self.counts[1].value())
+                self.status.setText("Interpolating slab..."); QApplication.processEvents()
+                image, h_axis, v_axis = project_image(
+                    controller.source_data, controller.source_axes, U,
+                    bounds, shape, self.slab_center.value(),
+                    self.slab_thick.value(), self.slab_n.value(),
+                    self.reduce.currentText())
+                self.image, self.h_axis, self.v_axis = image, h_axis, v_axis
+                self.labels = (format_direction(dirs[0]), format_direction(dirs[1]))
+                displayed = intensity_view(image, self.mode.currentText())
+                name = f"image {source_tag(controller.source_path)}"
+                scale = (float(v_axis[1] - v_axis[0]) if len(v_axis) > 1 else 1.0,
+                         float(h_axis[1] - h_axis[0]) if len(h_axis) > 1 else 1.0)
+                translate = (float(v_axis[0]), float(h_axis[0]))
+                controller.viewer.add_image(displayed, name=name,
+                                            colormap=self.cmap.currentText(),
+                                            scale=scale, translate=translate)
+                self.status.setText(f"Image {image.shape[1]}x{image.shape[0]} "
+                                    f"({self.unit}); slab N={self.slab_n.value()}")
+            except Exception as exc:
+                self.status.setText(f"Error: {exc}")
+                QMessageBox.critical(self, "EpiQ-Map image", str(exc))
+
+        def export_image(self) -> None:
+            if self.image is None:
+                self.status.setText("Generate an image first"); return
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Export image", "rsm_image.png",
+                "PNG (*.png);;TIFF (*.tif *.tiff)")
+            if not path: return
+            try:
+                displayed = intensity_view(self.image, self.mode.currentText())
+                save_image(path, displayed, self.h_axis, self.v_axis,
+                           cmap=self.cmap.currentText(), labels=self.labels,
+                           unit=self.unit)
+                msg = f"Saved {path}"
+                if self.save_npz.isChecked():
+                    npz = os.path.splitext(path)[0] + ".npz"
+                    save_image_npz(npz, self.image, self.h_axis, self.v_axis,
+                                   {"labels": self.labels, "unit": self.unit})
+                    msg += f" and {npz}"
+                self.status.setText(msg)
+            except Exception as exc:
+                self.status.setText(f"Error: {exc}")
+                QMessageBox.critical(self, "EpiQ-Map image", str(exc))
+
+    region_dock = RegionDock()
+    return region_dock, LineCutDock(), ImageDock(region_dock)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -869,12 +1083,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.u_matrix:
         try: controller.set_u(load_U_matrix(args.u_matrix))
         except Exception as exc: print(f"Could not load U matrix: {exc}", file=sys.stderr)
-    region_dock, line_dock = build_gui(controller, args)
+    region_dock, line_dock, image_dock = build_gui(controller, args)
     region_handle = viewer.window.add_dock_widget(region_dock, name="RSM region", area="right")
     line_handle = viewer.window.add_dock_widget(line_dock, name="Line cuts", area="right")
-    # Keep handles so a closed dock can be re-shown. napari also lists both
+    image_handle = viewer.window.add_dock_widget(image_dock, name="RSM image", area="right")
+    # Keep handles so a closed dock can be re-shown. napari also lists them
     # under the Window menu; region_dock gets a button as a guaranteed path.
-    controller.dock_handles = {"region": region_handle, "line": line_handle}
+    controller.dock_handles = {"region": region_handle, "line": line_handle,
+                               "image": image_handle}
     if hasattr(region_dock, "set_dock_handles"):
         region_dock.set_dock_handles(controller.dock_handles)
     controller.install_canvas_callbacks()
