@@ -1,0 +1,25 @@
+# EpiQ-Map monitor configuration (per beamtime).
+#
+# Precedence:  built-in defaults  <  this file  <  command-line flags
+# So you can edit paths here once per beamtime, and still override any single
+# value at launch, e.g.  python rsm_monitor.py --interval 30
+#
+# Point the monitor at a different config with:  --config /path/to/file.toml
+# Relative paths (e.g. autorsm, lattice_file) resolve from the repo directory.
+
+# --- Beamtime data locations (edit these each beamtime) ---
+base_dir   = "/nfs/chess/id4b/2024-2/gregory-3864-b/raw6M/"
+spec_dir   = "/nfs/chess/id4b/2024-2/gregory-3864-b/"
+output_dir = "/nfs/chess/id4baux/2024-2/gregory-3864-b/processed/output/"
+poni_file  = "/nfs/chess/id4baux/2024-2/gregory-3864-b/calibrations/ceO2_15keV.poni"
+mask_file  = "/nfs/chess/id4baux/2024-2/gregory-3864-b/calibrations/mask.edf"
+
+# --- Tools ---
+# Python interpreter that runs autoRSM (often a beamtime/user env, NOT this one).
+python  = "/nfs/chess/user/YOURUSER/anaconda3/bin/python"
+# autoRSM script; bundled in the repo by default.
+autorsm = "HKL_Convert/autoRSM.py"
+
+# --- Behaviour ---
+interval = 60                              # seconds between scans for new data
+source_command_list_name = "command_list_Andrej.txt"

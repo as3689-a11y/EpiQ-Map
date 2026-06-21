@@ -14,7 +14,28 @@ export OMP_NUM_THREADS=12
 /home/as3689/miniconda3/envs/viz/bin/python rsm_monitor.py
 ```
 
-Override beamtime paths without editing the source:
+## Configuration
+
+Per-beamtime settings live in `epiq_monitor.toml` (beside this script). Edit
+it once per beamtime instead of changing the code -- paths, the Python
+interpreter that runs autoRSM, the polling interval, etc.:
+
+```toml
+base_dir   = "/nfs/chess/id4b/2024-2/gregory-3864-b/raw6M/"
+output_dir = "/nfs/chess/id4baux/2024-2/gregory-3864-b/processed/output/"
+python     = "/nfs/chess/user/YOURUSER/anaconda3/bin/python"
+autorsm    = "HKL_Convert/autoRSM.py"   # relative paths resolve from the repo
+interval   = 60
+```
+
+Settings resolve in this order (later wins):
+
+```
+built-in defaults  <  epiq_monitor.toml  <  command-line flags
+```
+
+Point at a different config with `--config /path/to/file.toml`. Override any
+single value at launch without touching the file:
 
 ```bash
 python rsm_monitor.py \
@@ -24,6 +45,9 @@ python rsm_monitor.py \
   --poni-file /path/to/calibration.poni \
   --mask-file /path/to/mask.edf
 ```
+
+TOML parsing uses the stdlib `tomllib` on Python 3.11+, or the `tomli`
+backport on 3.10 and earlier (`conda install -n viz tomli`).
 
 Production and U_S reconstruction engines can be configured separately:
 

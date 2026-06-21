@@ -841,9 +841,50 @@ def default_opts():
     }
 
 
+def _load_toml(path):
+    """Parse a TOML file, using stdlib tomllib (3.11+) or the tomli backport."""
+    try:
+        import tomllib as toml          # Python 3.11+
+    except ModuleNotFoundError:
+        import tomli as toml             # pip install tomli (3.10 and earlier)
+    with open(path, 'rb') as handle:
+        return toml.load(handle)
+
+
+def load_config(path=None):
+    """Read monitor settings from a TOML file (defaults to epiq_monitor.toml
+    next to this script). Returns {} if no config is present and none was
+    explicitly requested. Relative path values resolve from the repo dir."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if path is None:
+        path = os.path.join(here, 'epiq_monitor.toml')
+        if not os.path.exists(path):
+            return {}
+    data = _load_toml(path)
+    unknown = set(data) - set(default_opts())
+    if unknown:
+        raise ValueError(f"unknown config keys in {path}: {sorted(unknown)}")
+    # Resolve relative path-like values against the repo directory.
+    for key in ('python', 'autorsm', 'make_log_files', 'lattice_file',
+                'base_dir', 'spec_dir', 'output_dir', 'poni_file', 'mask_file'):
+        val = data.get(key)
+        if isinstance(val, str) and val and not os.path.isabs(val):
+            data[key] = os.path.join(here, val)
+    return data
+
+
 def parse_args(argv=None):
+    # Precedence: built-in defaults < config file < command-line flags.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument('--config', default=None,
+                     help='TOML config file (default: epiq_monitor.toml beside '
+                          'this script)')
+    pre_args, _ = pre.parse_known_args(argv)
+
     opts = default_opts()
-    parser = argparse.ArgumentParser(description=__doc__)
+    opts.update(load_config(pre_args.config))
+
+    parser = argparse.ArgumentParser(description=__doc__, parents=[pre])
     for key in ('base_dir', 'spec_dir', 'output_dir', 'poni_file', 'mask_file',
                 'python', 'make_log_files', 'autorsm',
                 'lattice_file'):
@@ -854,9 +895,11 @@ def parse_args(argv=None):
     parser.add_argument('--source-command-list-name',
                         default=opts['source_command_list_name'])
     args = parser.parse_args(argv)
-    opts.update(vars(args))
+    config_path = args.config
+    opts.update({k: v for k, v in vars(args).items() if k != 'config'})
     if opts['command_list_name'] is None:
         opts['command_list_name'] = f"command_list_{opts['run_label']}.txt"
+    opts['config'] = config_path
     return opts
 
 
