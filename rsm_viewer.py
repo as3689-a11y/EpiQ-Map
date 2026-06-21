@@ -269,7 +269,8 @@ class RSMViewerController:
         self.memory_limit_mb = memory_limit_mb
         self.source_data: Optional[np.ndarray] = None
         self.source_axes: Optional[tuple[np.ndarray, ...]] = None
-        self.source_path = ""
+        self.source_path = ""               # first/primary path (indexing, labels)
+        self.source_paths: list[str] = []   # all co-added paths (1+ entries)
         self.U = np.eye(3)
         self.colormap = "inferno"          # image colormap (change via napari panel)
         self.equal_axes = False            # render as a cube; see display_scale
@@ -292,11 +293,39 @@ class RSMViewerController:
         # re-shown; populated in main() after the docks are added.
         self.dock_handles: dict[str, Any] = {}
 
-    def load_source(self, path: str) -> None:
-        data, H, K, L = load_rsm(path)
-        self.source_data = data
-        self.source_axes = (H, K, L)
-        self.source_path = os.path.abspath(path)
+    def load_source(self, path: Any) -> None:
+        """Load one scan, or co-add several scans that share the same grid.
+
+        ``path`` may be a single file path or a list of paths. Multiple scans
+        are combined voxel-by-voxel with nanmean (NaN = no coverage), which
+        requires identical H/K/L axes -- a mismatch raises ValueError naming
+        the offending file, since only co-registered scans may be co-added.
+        """
+        paths = [path] if isinstance(path, (str, os.PathLike)) else list(path)
+        if not paths:
+            raise ValueError("no source file selected")
+        data, H, K, L = load_rsm(paths[0])
+        axes = (H, K, L)
+        if len(paths) == 1:
+            self.source_data = data
+            self.source_axes = axes
+            self.source_path = os.path.abspath(paths[0])
+            self.source_paths = [self.source_path]
+            return
+        stack = [data]
+        for extra in paths[1:]:
+            d, h, k, l = load_rsm(extra)
+            for axis, ref, name in zip((h, k, l), axes, AXIS_NAMES):
+                if d.shape != data.shape or not np.array_equal(axis, ref):
+                    raise ValueError(
+                        f"{os.path.basename(extra)} has a different {name} axis; "
+                        "co-adding needs identical grids (same RSM/U).")
+            stack.append(d)
+        self.source_data = np.nanmean(np.stack(stack), axis=0).astype(np.float32)
+        self.source_axes = axes
+        # Tag with all paths; source_path stays a single string for indexing.
+        self.source_path = os.path.abspath(paths[0])
+        self.source_paths = [os.path.abspath(p) for p in paths]
 
     def set_u(self, matrix: Any, bstar: Any = None) -> None:
         self.U = validate_u_matrix(matrix)
@@ -304,20 +333,26 @@ class RSMViewerController:
         # loaded or identity U so RLU plotting can't use a stale cell.
         self.Bstar = None if bstar is None else validate_u_matrix(bstar)
 
-    def calculate_u(self, substrate: str, path: str,
+    def needs_reload(self, path: Any) -> bool:
+        """True if the requested source(s) differ from what is loaded."""
+        paths = [path] if isinstance(path, (str, os.PathLike)) else list(path)
+        return [os.path.abspath(p) for p in paths] != self.source_paths
+
+    def calculate_u(self, substrate: str, path: Any,
                     normal: Optional[np.ndarray] = None) -> dict:
         """Index the raw source against a substrate cell and set U.
 
-        Loads the source if needed, runs the find-peaks + lattice-indexing
-        pipeline from Visualize_RSM_Lib, and stores the resulting U. Returns
-        the result dict (keys include 'U', 'rms', 'n_inliers').
+        Loads the source if needed (``path`` may be one file or a list of
+        scans to co-add), runs the find-peaks + lattice-indexing pipeline from
+        Visualize_RSM_Lib, and stores the resulting U. Returns the result dict
+        (keys include 'U', 'rms', 'n_inliers').
 
         ``normal`` is the substrate surface normal (h,k,l), e.g. [0,0,1]; it
         pins U reproducibly so the indexed frame is consistent across runs.
         """
         if not substrate:
             raise ValueError("choose a substrate")
-        if self.source_path != os.path.abspath(path):
+        if self.needs_reload(path):
             self.load_source(path)
         H, K, L = self.source_axes
         result = compute_U_from_substrate(self.source_data, H, K, L,
@@ -443,6 +478,10 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
             super().__init__()
             layout = QVBoxLayout(self)
             source_row = QHBoxLayout(); self.source = QLineEdit(initial.file or "")
+            # Co-add list from a multi-select browse; cleared if the user types a
+            # single path by hand (then the line edit is the source of truth).
+            self._source_paths: list = [os.path.abspath(initial.file)] if initial.file else []
+            self.source.textEdited.connect(lambda _t: setattr(self, "_source_paths", []))
             browse = QPushButton("Browse .nxs"); browse.clicked.connect(self.choose_source)
             source_row.addWidget(self.source); source_row.addWidget(browse); layout.addLayout(source_row)
             u_row = QHBoxLayout(); self.u_path = QLineEdit(initial.u_matrix or "")
@@ -476,18 +515,17 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
                 grid.addWidget(QLabel(header), 0, col)
             self.limits = []; self.counts = []
             self.orient = []
-            roles = ("horizontal", "vertical", "slider")
             directions = ("[1 0 0]", "[0 1 0]", "[0 0 1]")
             defaults = (initial.q1_range, initial.q2_range, initial.q3_range)
             shape = initial.shape
-            for i, (name, role, dir_text, bounds, count) in enumerate(
-                    zip(QAXIS_NAMES, roles, directions, defaults, shape)):
+            for i, (name, dir_text, bounds, count) in enumerate(
+                    zip(QAXIS_NAMES, directions, defaults, shape)):
                 r = i + 1
                 direction = QLineEdit(dir_text)
                 lo = QDoubleSpinBox(); hi = QDoubleSpinBox(); n = QSpinBox()
                 for box in (lo, hi): box.setRange(-1e6, 1e6); box.setDecimals(2)
                 lo.setValue(bounds[0]); hi.setValue(bounds[1]); n.setRange(1, 10000); n.setValue(count)
-                grid.addWidget(QLabel(f"{name} ({role})"), r, 0)
+                grid.addWidget(QLabel(name), r, 0)
                 grid.addWidget(direction, r, 1); grid.addWidget(lo, r, 2)
                 grid.addWidget(hi, r, 3); grid.addWidget(n, r, 4)
                 self.orient.append(direction)
@@ -549,8 +587,23 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
             QMessageBox.critical(self, "EpiQ-Map", str(exc))
 
         def choose_source(self) -> None:
-            path, _ = QFileDialog.getOpenFileName(self, "Open autoRSM file", "", "NeXus (*.nxs)")
-            if path: self.source.setText(path)
+            # Allow selecting several scans to co-add (same RSM/U/grid). They are
+            # combined with nanmean at load time; mismatched grids are rejected.
+            paths, _ = QFileDialog.getOpenFileNames(self, "Open autoRSM file(s)", "", "NeXus (*.nxs)")
+            if not paths:
+                return
+            self._source_paths = [os.path.abspath(p) for p in paths]
+            if len(paths) == 1:
+                self.source.setText(paths[0])
+            else:
+                self.source.setText(f"{paths[0]}  (+{len(paths) - 1} more, co-added)")
+
+        def _selected_sources(self) -> list:
+            """Paths to load: the multi-select list if set, else the line edit."""
+            if getattr(self, "_source_paths", None):
+                return self._source_paths
+            text = self.source.text().strip()
+            return [text] if text else []
 
         def choose_u(self) -> None:
             path, _ = QFileDialog.getOpenFileName(self, "Open U matrix", "", "Text (*.txt);;All files (*)")
@@ -570,14 +623,14 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
 
         def calculate_u(self) -> None:
             try:
-                path = self.source.text().strip()
-                if not path: raise ValueError("select a .nxs source file first")
+                sources = self._selected_sources()
+                if not sources: raise ValueError("select a .nxs source file first")
                 substrate = self.substrate.currentText()
                 normal_text = self.normal.text().strip()
                 normal = parse_direction(normal_text) if normal_text else None
                 tag = f" (normal {format_direction(normal)})" if normal is not None else ""
                 self.status.setText(f"Indexing against {substrate}{tag}..."); QApplication.processEvents()
-                result = controller.calculate_u(substrate, path, normal=normal)
+                result = controller.calculate_u(substrate, sources, normal=normal)
                 self.u_path.setText(f"computed ({substrate})")
                 self.status.setText(
                     f"U from {substrate}{tag}: {result['n_inliers']} inliers, "
@@ -608,10 +661,12 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
                 if estimate > controller.memory_limit_mb and QMessageBox.question(
                         self, "Large allocation", f"Estimated peak allocation is {estimate:.0f} MiB. Continue?") != QMessageBox.Yes:
                     return
-                path = self.source.text().strip()
-                if not path: raise ValueError("select a .nxs source file")
-                if controller.source_path != os.path.abspath(path):
-                    self.status.setText("Loading source data..."); QApplication.processEvents(); controller.load_source(path)
+                sources = self._selected_sources()
+                if not sources: raise ValueError("select a .nxs source file")
+                if controller.needs_reload(sources):
+                    n = len(sources)
+                    msg = "Loading source data..." if n == 1 else f"Co-adding {n} scans..."
+                    self.status.setText(msg); QApplication.processEvents(); controller.load_source(sources)
                 q1, q2, q3 = self.read_orientation()
                 # Orientation matrix columns are in volume-axis order (Q3, Q2, Q1).
                 vol_dirs = [(q1, q2, q3)[i] for i in QAXIS_TO_VOLUME]
@@ -791,10 +846,10 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--file"); parser.add_argument("--u-matrix")
-    parser.add_argument("--q1-range", nargs=2, type=float, default=(-4,4))
-    parser.add_argument("--q2-range", nargs=2, type=float, default=(-.3,.3))
-    parser.add_argument("--q3-range", nargs=2, type=float, default=(0,6))
-    parser.add_argument("--shape", nargs=3, type=int, default=(400,80,500))
+    parser.add_argument("--q1-range", nargs=2, type=float, default=(-3,3))
+    parser.add_argument("--q2-range", nargs=2, type=float, default=(-3,3))
+    parser.add_argument("--q3-range", nargs=2, type=float, default=(0,4))
+    parser.add_argument("--shape", nargs=3, type=int, default=(201,201,201))
     parser.add_argument("--memory-limit-mb", type=float, default=2048)
     return parser.parse_args(argv)
 

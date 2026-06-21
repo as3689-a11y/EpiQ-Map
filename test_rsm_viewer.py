@@ -116,6 +116,45 @@ class DisplayScaleTest(unittest.TestCase):
         np.testing.assert_allclose(ext, [8.0, 8.0, 8.0])   # target = max span
 
 
+class CoAddTest(unittest.TestCase):
+    """Multi-scan co-add via load_source (nanmean, identical-grid guard)."""
+
+    def setUp(self):
+        import rsm_viewer
+        self.rv = rsm_viewer
+        self.H = np.linspace(-1, 1, 4)
+        a = np.full((4, 4, 4), 2.0, np.float32)
+        b = np.full((4, 4, 4), 4.0, np.float32)
+        b[0, 0, 0] = np.nan                       # a gap in scan b
+        bad = np.ones((4, 4, 4), np.float32)
+        self.store = {
+            "a": (a, self.H, self.H, self.H),
+            "b": (b, self.H, self.H, self.H),
+            "bad": (bad, self.H, np.linspace(-2, 2, 4), self.H),  # different K
+        }
+        self._orig = rsm_viewer.load_rsm
+        rsm_viewer.load_rsm = lambda p: self.store[str(p)]
+        self.ctrl = RSMViewerController(object())
+
+    def tearDown(self):
+        self.rv.load_rsm = self._orig
+
+    def test_nanmean_and_nan_gap(self):
+        self.ctrl.load_source(["a", "b"])
+        self.assertAlmostEqual(self.ctrl.source_data[1, 1, 1], 3.0)   # (2+4)/2
+        self.assertAlmostEqual(self.ctrl.source_data[0, 0, 0], 2.0)   # b is NaN -> just a
+        self.assertEqual(len(self.ctrl.source_paths), 2)
+
+    def test_needs_reload(self):
+        self.ctrl.load_source(["a", "b"])
+        self.assertFalse(self.ctrl.needs_reload(["a", "b"]))
+        self.assertTrue(self.ctrl.needs_reload(["a"]))
+
+    def test_mismatched_grid_rejected(self):
+        with self.assertRaises(ValueError):
+            self.ctrl.load_source(["a", "bad"])
+
+
 class SourceTagTest(unittest.TestCase):
     def test_prefers_trailing_number(self):
         self.assertEqual(source_tag("/data/scan_0042.nxs"), "0042")
