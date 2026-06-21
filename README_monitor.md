@@ -49,30 +49,20 @@ python rsm_monitor.py \
 TOML parsing uses the stdlib `tomllib` on Python 3.11+, or the `tomli`
 backport on 3.10 and earlier (`conda install -n viz tomli`).
 
-Production and U_S reconstruction engines can be configured separately:
+## How reconstruction is invoked
 
-```bash
-python rsm_monitor.py \
-  --python /path/to/beamtime/python \
-  --autorsm /path/to/original/autoRSM.py \
-  --autorsm-us /path/to/autoRSM_U_S_server.py
-```
+The monitor builds each reconstruction command directly as
+`[python, autorsm, config_file]` -- there is no intermediate command list.
+`make_log_files` writes one self-contained config (`.txt`) per scan into
+`<output_dir>/logs`; the monitor runs autoRSM on each. The configs double as
+manual rerun recipes: `python autoRSM.py <output_dir>/logs/<scan>.txt`.
 
-`--autorsm` is used only when generating the wrapper's private discovery
-list. Actual production/original execution is resolved from Andrej's source
-list as described below. Custom-grid execution uses `--autorsm-us`.
-
-For production/original mode, the monitor treats
-`<output>/logs/command_list_Andrej.txt` as read-only and uses the exact command
-line paired with that scan's source config. It preserves the interpreter and
-autoRSM paths and substitutes only the derived U_S config argument. Override
-the source filename with `--source-command-list-name`; a missing exact match
-is an error rather than a reason to guess another autoRSM.
-
-`autoRSM_U_S_server.py` is derived directly from the production server
-autoRSM. Its frame loading, normalization, static theta mask, goniometer
-transform, and `hklBen` calls are unchanged; only custom-grid configuration,
-collision-safe tagged naming, and reconstruction metadata were added.
+A single `autoRSM.py` handles every case: an unindexed lab-frame Q map, or an
+indexed (U/UB) map, with optional custom H/K/L ranges -- decided by the keys
+present in the config (UB / Substrate Lattice Params / H,K,L Range + Grid
+Shape). Identity UB and detector-derived ranges are the defaults when those
+keys are absent. Point at a different interpreter or autoRSM with `--python`
+and `--autorsm` (or set them in `epiq_monitor.toml`).
 
 The defaults are in `rsm_monitor.py:default_opts`.
 

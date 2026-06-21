@@ -110,10 +110,11 @@ def traverse_and_write_logs(cfg):
     """Walk cfg.base_dir, and at every directory matching cfg.scan_depth,
     extract material / sample / temperature / scan number from the path,
     count image files, and -- if there are enough to count as a real
-    scan -- look up the scan's motor in the SPEC file, write a log file,
-    and queue the processing command."""
+    scan -- look up the scan's motor in the SPEC file and write a per-scan
+    log file (a self-contained autoRSM config you can also rerun by hand).
+    Returns the list of log files written."""
     log_count = 0
-    command_list = []
+    written = []
 
     for root, dirs, files in os.walk(cfg.base_dir):
         path_parts = root.split(os.sep)
@@ -154,13 +155,13 @@ def traverse_and_write_logs(cfg):
         )
         log_file_name = write_log_file(log_content, root, cfg.log_dir)
 
-        command_list.append(f"{cfg.autorsm_cmd} {log_file_name}")
+        written.append(log_file_name)
         log_count += 1
         if log_count >= cfg.max_log_files:
             break
 
     print(f"\nTotal logs processed: {log_count}")
-    return command_list
+    return written
 
 
 # --- CLI -------------------------------------------------------------------
@@ -181,9 +182,6 @@ def parse_args(argv=None):
     p.add_argument("--poni-file", required=True, help="Path to the .poni calibration file")
     p.add_argument("--mask-file", required=True, help="Path to the mask .edf file")
 
-    p.add_argument("--command-list-name", default="command_list_Andrej.txt",
-                    help="Filename (within <output-dir>/logs) for the generated command list")
-
     # Path-depth indices. Defaults match the standard CHESS layout:
     #   .../raw6M/<material>/<sample_name>/<temperature>/<scan_xxx>
     p.add_argument("--scan-depth", type=int, default=11,
@@ -198,10 +196,6 @@ def parse_args(argv=None):
                     help="A directory only counts as a real scan if it has more than this many image files")
     p.add_argument("--max-log-files", type=int, default=1000,
                     help="Safety limit on number of logs written in one run")
-    p.add_argument("--autorsm-cmd", default=(
-                        f"{sys.executable} "
-                        f"{os.path.join(os.path.dirname(os.path.abspath(__file__)), 'autoRSM.py')}"),
-                    help="Command prefix used to build each queued processing command")
 
     return p.parse_args(argv)
 
@@ -209,16 +203,12 @@ def parse_args(argv=None):
 def main(argv=None):
     cfg = parse_args(argv)
     cfg.log_dir = os.path.join(cfg.output_dir, "logs")
-    cfg.command_list_file = os.path.join(cfg.log_dir, cfg.command_list_name)
 
     os.makedirs(cfg.log_dir, exist_ok=True)
 
-    command_list = traverse_and_write_logs(cfg)
+    written = traverse_and_write_logs(cfg)
 
-    with open(cfg.command_list_file, "w") as f:
-        f.writelines(f"{cmd}\n" for cmd in command_list)
-
-    print(f"Command list written: {cfg.command_list_file} ({len(command_list)} commands)")
+    print(f"Per-scan logs written to {cfg.log_dir} ({len(written)} files)")
     return 0
 
 

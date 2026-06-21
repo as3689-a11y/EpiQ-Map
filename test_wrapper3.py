@@ -192,24 +192,13 @@ Output Directory: /tmp/output/
             self.assertNotIn('Output Tag:', text)
             self.assertNotIn('U_S Record:', text)
 
-    def test_original_command_is_taken_from_andrej_list(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            logs = os.path.join(tmp, 'logs')
-            os.makedirs(logs)
-            source = os.path.join(logs, 'scan 42.txt')
-            derived = os.path.join(logs, 'derived U_S.txt')
-            with open(source, 'w'):
-                pass
-            command_list = os.path.join(logs, 'command_list_Andrej.txt')
-            with open(command_list, 'w') as fh:
-                fh.write('/correct/python /correct/autoRSM.py '
-                         f'{source!r}\n')
-            opts = {'output_dir': tmp,
-                    'source_command_list_name': 'command_list_Andrej.txt'}
-            command = rsm_monitor.command_from_source_list(
-                opts, source, derived)
-            self.assertEqual(command,
-                             ['/correct/python', '/correct/autoRSM.py', derived])
+    def test_autorsm_command_built_from_config(self):
+        # The command is now built directly from configured paths -- no
+        # intermediate command list -- as [python, autorsm, config].
+        opts = {'python': '/correct/python', 'autorsm': '/correct/autoRSM.py'}
+        config = '/logs/scan 42.txt'
+        self.assertEqual(rsm_monitor.autorsm_command(opts, config),
+                         ['/correct/python', '/correct/autoRSM.py', config])
 
 
 if __name__ == '__main__':

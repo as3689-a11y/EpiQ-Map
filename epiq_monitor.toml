@@ -22,4 +22,3 @@ autorsm = "HKL_Convert/autoRSM.py"
 
 # --- Behaviour ---
 interval = 60                              # seconds between scans for new data
-source_command_list_name = "command_list_Andrej.txt"

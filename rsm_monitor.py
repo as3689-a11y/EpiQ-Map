@@ -19,30 +19,15 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 import rsm_workflow as workflow
 
 
-def command_from_source_list(opts, source_config, target_config=None, use_u_variant=False):
-    """Use the exact command prefix paired with source_config in Andrej's list."""
-    path = os.path.join(opts['output_dir'], 'logs',
-                        opts['source_command_list_name'])
-    if not os.path.exists(path):
-        raise FileNotFoundError(f'Source command list not found: {path}')
-    wanted = os.path.abspath(source_config)
-    with open(path) as fh:
-        for line in fh:
-            text = line.strip()
-            if not text:
-                continue
-            parts = shlex.split(text)
-            if parts and os.path.abspath(parts[-1]) == wanted:
-                command = parts[:-1] + [target_config or source_config]
-                if use_u_variant:
-                    script_index = len(command) - 2
-                    root, extension = os.path.splitext(command[script_index])
-                    if extension != '.py':
-                        raise ValueError(f'autoRSM command has no Python script: {text}')
-                    command[script_index] = root + '_U' + extension
-                return command
-    raise LookupError(
-        f'No command for {source_config} in {path}; refusing to guess autoRSM')
+def autorsm_command(opts, config_path):
+    """Build the autoRSM invocation for a config file.
+
+    The command is constructed directly from configured paths -- there is no
+    intermediate command list. A single autoRSM handles both unindexed maps
+    and indexed (U/UB) maps with optional custom ranges; which one runs is
+    decided by the keys present in ``config_path``.
+    """
+    return [opts['python'], opts['autorsm'], config_path]
 
 
 class Dataset:
@@ -371,12 +356,7 @@ class WatcherWorker(QtCore.QObject):
         return result
 
     def _command_for(self, dataset):
-        try:
-            return command_from_source_list(
-                self.opts, dataset.config_path, dataset.config_path)
-        except (OSError, LookupError) as exc:
-            self.status.emit(str(exc))
-            return None
+        return autorsm_command(self.opts, dataset.config_path)
 
     def _auto_index(self, datasets):
         by_scan = {ds.scan_number: ds for ds in datasets}
@@ -435,9 +415,7 @@ class WatcherWorker(QtCore.QObject):
                 opts['python'], opts['make_log_files'],
                 '--base-dir', opts['base_dir'], '--spec-dir', opts['spec_dir'],
                 '--output-dir', opts['output_dir'], '--poni-file',
-                opts['poni_file'], '--mask-file', opts['mask_file'],
-                '--command-list-name', opts['command_list_name'],
-                '--autorsm-cmd', f"{opts['python']} {opts['autorsm']}"],
+                opts['poni_file'], '--mask-file', opts['mask_file']],
                 capture_output=True, text=True, check=False)
             datasets = self._datasets()
             self.datasets_updated.emit(datasets)
@@ -480,9 +458,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.lattices = workflow.load_lattice_entries(opts['lattice_file'])
         self._build_ui()
         self.refresh()
-        source_list = os.path.join(opts['output_dir'], 'logs',
-                                   opts['source_command_list_name'])
-        self.message(f"Production commands (read-only): {source_list}")
+        self.message(f"autoRSM: {opts['python']} {opts['autorsm']}")
+        self.message(f"Scanning logs in: {os.path.join(opts['output_dir'], 'logs')}")
 
     def _build_ui(self):
         self.setWindowTitle('autoRSM monitor - wrapper3')
@@ -742,13 +719,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
             ds.config_path, config_path, metadata, ranges, shape, tag,
             custom_grid=custom_grid, matrix_type=matrix_type)
 
-        try:
-            command = command_from_source_list(
-                self.opts, ds.config_path, config_path, use_u_variant=True)
-        except (OSError, LookupError) as exc:
-            QtWidgets.QMessageBox.critical(
-                self, 'Command not found', str(exc))
-            return
+        command = autorsm_command(self.opts, config_path)
         command_text = shlex.join(command)
         log_dir = os.path.join(self.opts['output_dir'], 'logs')
         command_list = os.path.join(
@@ -830,8 +801,6 @@ def default_opts():
         'interval': 60,
         'run_label': run_label,
         'python': '/nfs/chess/user/ss3428/anaconda3_jpcr/bin/python',
-        'command_list_name': f'command_list_{run_label}.txt',
-        'source_command_list_name': 'command_list_Andrej.txt',
         'make_log_files': os.path.join(here, 'make_log_files.py'),
         # autoRSM ships bundled in HKL_Convert/ so the monitor is self-contained
         # wherever the repo is deployed; override with --autorsm if it lives
@@ -891,14 +860,9 @@ def parse_args(argv=None):
         parser.add_argument('--' + key.replace('_', '-'), default=opts[key])
     parser.add_argument('--interval', type=int, default=opts['interval'])
     parser.add_argument('--run-label', default=opts['run_label'])
-    parser.add_argument('--command-list-name', default=None)
-    parser.add_argument('--source-command-list-name',
-                        default=opts['source_command_list_name'])
     args = parser.parse_args(argv)
     config_path = args.config
     opts.update({k: v for k, v in vars(args).items() if k != 'config'})
-    if opts['command_list_name'] is None:
-        opts['command_list_name'] = f"command_list_{opts['run_label']}.txt"
     opts['config'] = config_path
     return opts
 

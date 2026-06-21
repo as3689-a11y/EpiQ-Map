@@ -67,6 +67,10 @@ def parse_config(path):
         'Output Directory': str,
         'UB': lambda v: np.array(ast.literal_eval(v)),
         'Substrate Lattice Params': ast.literal_eval,
+        'H Range': ast.literal_eval,
+        'K Range': ast.literal_eval,
+        'L Range': ast.literal_eval,
+        'Grid Shape': ast.literal_eval,
     }
 
     cfg = {}
@@ -94,6 +98,21 @@ def parse_config(path):
         raise ValueError("'UB' given without 'Substrate Lattice Params'; "
                          "both are needed for an indexed (HKL) map.")
 
+    grid_keys = ('H Range', 'K Range', 'L Range', 'Grid Shape')
+    supplied = [key in cfg for key in grid_keys]
+    if any(supplied) and not all(supplied):
+        raise ValueError("custom grids require H Range, K Range, L Range, and Grid Shape together")
+    if all(supplied):
+        shape = tuple(int(n) for n in cfg['Grid Shape'])
+        if len(shape) != 3 or any(n < 2 for n in shape):
+            raise ValueError("Grid Shape must contain three integers >= 2")
+        for key in grid_keys[:3]:
+            limits = tuple(float(x) for x in cfg[key])
+            if len(limits) != 2 or not limits[0] < limits[1]:
+                raise ValueError(f"{key} must be (minimum, maximum)")
+            cfg[key] = limits
+        cfg['Grid Shape'] = shape
+
     cfg.setdefault('Theta Scan Number', None)
     cfg.setdefault('Theta Scan List', [])
     return cfg
@@ -101,6 +120,15 @@ def parse_config(path):
 
 def build_grids(cfg, poni):
     """Return (H, K, L, UB, fout_dir) for indexed or unindexed maps."""
+    if all(key in cfg for key in ('H Range', 'K Range', 'L Range', 'Grid Shape')):
+        nH, nK, nL = cfg['Grid Shape']
+        H = np.linspace(*cfg['H Range'], nH)
+        K = np.linspace(*cfg['K Range'], nK)
+        L = np.linspace(*cfg['L Range'], nL)
+        UB = cfg.get('UB', np.identity(3))
+        subdir = 'indexed_objects' if 'UB' in cfg else 'transformed_objects'
+        return H, K, L, UB, os.path.join(cfg['Output Directory'], subdir)
+
     qmag = poni.qArray()
     out_max = qmag[0, round(poni.poni2 / poni.detector.pixel2)] / 10.0
     in_max = qmag[-1, 0] / 10.0
@@ -257,7 +285,7 @@ def main():
     print(f"UB:\n{UB}")
     print(f"Output file: {fout}")
     print(f"H: [{H[0]:.4f}, {H[-1]:.4f}]  K: [{K[0]:.4f}, {K[-1]:.4f}]  "
-          f"L: [{L[0]:.4f}, {L[-1]:.4f}]  ({GRID_POINTS}^3 voxels)")
+          f"L: [{L[0]:.4f}, {L[-1]:.4f}]  ({len(H)} x {len(K)} x {len(L)} voxels)")
 
     # Frame-independent detector geometry, computed once.
     q = hklBen.detector_q(poni)
