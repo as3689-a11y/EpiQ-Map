@@ -25,3 +25,7 @@ autorsm = "HKL_Convert/autoRSM.py"
 
 # --- Behaviour ---
 interval = 60                              # seconds between scans for new data
+# Drop any frame whose peak (unmasked) intensity exceeds this from the
+# reconstruction -- a detector overload otherwise smears a saturation halo
+# across the map. Raise it to keep brighter frames.
+max_intensity = 1e5

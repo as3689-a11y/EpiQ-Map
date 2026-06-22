@@ -72,6 +72,7 @@ def parse_config(path):
         'L Range': ast.literal_eval,
         'Grid Shape': ast.literal_eval,
         'Output Tag': str,
+        'Max Intensity': lambda v: None if v == 'None' else float(v),
     }
 
     cfg = {}
@@ -202,10 +203,24 @@ def make_counts(img, mask_bool, inv_solidangle, icnorm_i):
     return counts
 
 
+def is_overloaded(img, unmasked, max_intensity):
+    """True if the frame's peak *unmasked* intensity exceeds the overload
+    threshold. Such a frame is a detector overload whose saturation halo would
+    smear across the map, so it is dropped entirely. The masked pixels (gaps,
+    known-hot pixels) are excluded so a permanently-hot masked pixel cannot
+    veto every frame. ``max_intensity`` None disables the check.
+    """
+    if max_intensity is None:
+        return False
+    return float(img.ravel()[unmasked].max()) > max_intensity
+
+
 def transform_scan(scan_num, image_dir, geom, cfg, H, K, L, UB, data, norm):
     """Histogram one phi scan (eta, chi fixed; phi varies per frame)."""
     q, inv_solidangle, _ = geom
     mask_bool = (fabio.open(cfg['Mask File']).data > 0.5).ravel()
+    unmasked = ~mask_bool
+    max_intensity = cfg.get('Max Intensity')
 
     imgfiles = list_images(image_dir)
     scan = SpecDataFile(cfg['Specfile']).getScan(scan_num)
@@ -221,14 +236,22 @@ def transform_scan(scan_num, image_dir, geom, cfg, H, K, L, UB, data, norm):
               f"{min(len(imgfiles), len(phi))}.")
     nframes = min(len(imgfiles), len(phi))
 
+    overloaded = 0
     frames = iter_frames(image_dir, imgfiles[:nframes])
     for i, img in enumerate(tqdm.tqdm(frames, total=nframes,
                                       desc=f"scan {scan_num}")):
         if icnorm[i] <= 0.0:
             continue
+        if is_overloaded(img, unmasked, max_intensity):
+            overloaded += 1
+            continue
         counts = make_counts(img, mask_bool, inv_solidangle, icnorm[i])
         M = hklBen.rotation_matrix(eta, chi, phi[i], UB)
         hklBen.HKLHIST(q, M, counts, H, K, L, data, norm)
+    if overloaded:
+        print(f"scan {scan_num}: skipped {overloaded} overloaded frame(s) "
+              f"(peak > {max_intensity:g})")
+    return overloaded
 
 
 def theta_scan(scan_num, image_dir, geom, cfg, H, K, L, UB, data, norm):
@@ -242,6 +265,8 @@ def theta_scan(scan_num, image_dir, geom, cfg, H, K, L, UB, data, norm):
     """
     q, inv_solidangle, _ = geom
     mask_bool = (fabio.open(cfg['Mask File']).data > 0.5).ravel()
+    unmasked = ~mask_bool
+    max_intensity = cfg.get('Max Intensity')
 
     imgfiles = list_images(image_dir)
     scan = SpecDataFile(cfg['Specfile']).getScan(scan_num)
@@ -257,14 +282,22 @@ def theta_scan(scan_num, image_dir, geom, cfg, H, K, L, UB, data, norm):
               f"{min(len(imgfiles), len(eta))}.")
     nframes = min(len(imgfiles), len(eta))
 
+    overloaded = 0
     frames = iter_frames(image_dir, imgfiles[:nframes])
     for i, img in enumerate(tqdm.tqdm(frames, total=nframes,
                                       desc=f"theta scan {scan_num}")):
         if icnorm[i] <= 0.0:
             continue
+        if is_overloaded(img, unmasked, max_intensity):
+            overloaded += 1
+            continue
         counts = make_counts(img, mask_bool, inv_solidangle, icnorm[i])
         M = hklBen.rotation_matrix(eta[i], chi, phi, UB)
         hklBen.HKLHIST(q, M, counts, H, K, L, data, norm)
+    if overloaded:
+        print(f"theta scan {scan_num}: skipped {overloaded} overloaded "
+              f"frame(s) (peak > {max_intensity:g})")
+    return overloaded
 
 
 # ----------------------------------------------------------------------
@@ -289,7 +322,7 @@ def main():
     for key in ('Material', 'Sample Name', 'Scan Number', 'Scan List',
                 'Theta Scan Number', 'Theta Scan List', 'Temperature',
                 'PONI File', 'Mask File', 'Specfile',
-                'Temperature Directory', 'Image Directory'):
+                'Temperature Directory', 'Image Directory', 'Max Intensity'):
         if key in cfg:
             print(f"{key}: {cfg[key]}")
     print(f"UB:\n{UB}")
@@ -312,15 +345,23 @@ def main():
         raise ValueError("Nothing to process: both 'Scan List' and "
                          "'Theta Scan List' are empty.")
 
+    skipped = 0
     for scan in phi_scans:
         image_dir = os.path.join(cfg['Temperature Directory'],
                                  f"{cfg['Material']}_{scan:03d}") + os.sep
-        transform_scan(scan, image_dir, geom, cfg, H, K, L, UB, data, norm)
+        skipped += transform_scan(scan, image_dir, geom, cfg, H, K, L, UB,
+                                  data, norm)
 
     for scan in theta_scans:
         image_dir = os.path.join(cfg['Temperature Directory'],
                                  f"{cfg['Material']}_{scan:03d}") + os.sep
-        theta_scan(scan, image_dir, geom, cfg, H, K, L, UB, data, norm)
+        skipped += theta_scan(scan, image_dir, geom, cfg, H, K, L, UB,
+                              data, norm)
+
+    max_intensity = cfg.get('Max Intensity')
+    if max_intensity is not None:
+        print(f"Total overloaded frames skipped: {skipped} "
+              f"(peak > {max_intensity:g})")
 
     dataout = (data.clip(0.0) / norm.clip(0.9)).reshape(len(H), len(K), len(L))
 

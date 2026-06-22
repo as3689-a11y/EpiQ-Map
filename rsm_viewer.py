@@ -2,6 +2,8 @@
 """EpiQ-Map: interactive napari viewer for bounded reciprocal-space maps.
 
 Reciprocal-space inspection for epitaxial thin films.
+
+Created by Ben Gregory and Andrej Singer.
 """
 
 from __future__ import annotations

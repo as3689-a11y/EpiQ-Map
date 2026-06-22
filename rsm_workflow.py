@@ -185,22 +185,23 @@ def append_unique_line(path, line):
 
 
 def sync_config_paths(config_path, poni_file=None, mask_file=None,
-                      output_dir=None, spec_dir=None):
-    """Update a per-scan log's global beamtime paths in place from the current
-    config, then return the list of keys that changed.
+                      output_dir=None, spec_dir=None, max_intensity=None):
+    """Update a per-scan log's global beamtime settings in place from the
+    current config, then return the list of keys that changed.
 
-    make_log_files bakes PONI/Mask/Output/Specfile into each log when it is
-    first written and never rewrites an existing log, so a corrected
+    make_log_files bakes PONI/Mask/Output/Specfile/Max Intensity into each log
+    when it is first written and never rewrites an existing log, so a corrected
     epiq_monitor.toml otherwise has no effect until the logs are deleted. This
     reconciles those global fields (the per-scan Image/Temperature directories
     are left alone -- they are tied to base_dir, which renames the log) so a
-    toml fix takes effect on the next conversion. Atomic replace; no-op when
+    toml change takes effect on the next conversion. Atomic replace; no-op when
     nothing differs.
     """
     with open(config_path) as fh:
         lines = fh.readlines()
     material = next((line.split(': ', 1)[1].strip() for line in lines
                      if line.startswith('Material: ')), None)
+    path_keys = {'PONI File', 'Mask File', 'Output Directory', 'Specfile'}
     updates = {}
     if poni_file is not None:
         updates['PONI File'] = poni_file
@@ -210,17 +211,31 @@ def sync_config_paths(config_path, poni_file=None, mask_file=None,
         updates['Output Directory'] = output_dir
     if spec_dir is not None and material is not None:
         updates['Specfile'] = os.path.join(spec_dir, material)
+    if max_intensity is not None:
+        updates['Max Intensity'] = repr(float(max_intensity))
 
-    changed, new_lines = [], []
+    changed, new_lines, seen = [], [], set()
     for line in lines:
         key = line.split(': ', 1)[0] if ': ' in line else None
         if key in updates:
+            seen.add(key)
             value = line.split(': ', 1)[1].strip()
-            if os.path.normpath(value) != os.path.normpath(updates[key]):
-                new_lines.append(f'{key}: {updates[key]}\n')
+            new = updates[key]
+            differs = (os.path.normpath(value) != os.path.normpath(new)
+                       if key in path_keys else value != new)
+            if differs:
+                new_lines.append(f'{key}: {new}\n')
                 changed.append(key)
                 continue
         new_lines.append(line)
+    # Append any configured key the log predates (e.g. Max Intensity in logs
+    # written before that key existed) -- replacing alone would never add it.
+    if new_lines and not new_lines[-1].endswith('\n'):
+        new_lines[-1] += '\n'
+    for key in updates:
+        if key not in seen:
+            new_lines.append(f'{key}: {updates[key]}\n')
+            changed.append(key)
     if changed:
         tmp = config_path + '.tmp'
         with open(tmp, 'w') as fh:
@@ -295,7 +310,8 @@ def auto_match_substrate(data, H, K, L, lattice_file, verbose=False):
 
 def write_reconstruction_config(source_config, destination, metadata, ranges,
                                 shape, output_tag, custom_grid=True,
-                                matrix_type="UB", orientation=None):
+                                matrix_type="UB", orientation=None,
+                                max_intensity=None):
     """Create an indexed autoRSM config without modifying the source log.
 
     ``orientation``, if given, is a ``(Q1, Q2, Q3)`` triple of crystal
@@ -303,8 +319,12 @@ def write_reconstruction_config(source_config, destination, metadata, ranges,
     along its direction (``transfer @ orientation_matrix``), exactly like
     rsm_viewer's oriented Q axes.
     """
+    # Max Intensity is stripped and re-written from the current threshold so a
+    # reconstruction always uses the overload cutoff configured now, not a
+    # stale value (or none) baked into the source log.
     remove = {'UB', 'Substrate Lattice Params', 'H Range', 'K Range',
-              'L Range', 'Grid Shape', 'Output Tag', 'U_S Record'}
+              'L Range', 'Grid Shape', 'Output Tag', 'U_S Record',
+              'Max Intensity'}
     kept = []
     with open(source_config) as fh:
         for line in fh:
@@ -335,6 +355,8 @@ def write_reconstruction_config(source_config, destination, metadata, ranges,
         f"Output Tag: {out_tag}",
         f"UB: {transfer.tolist()}",
     ]
+    if max_intensity is not None:
+        values.append(f"Max Intensity: {repr(float(max_intensity))}")
     if custom_grid:
         values.extend([
             f"Substrate Lattice Params: {tuple(metadata['lattice'])}",

@@ -83,6 +83,7 @@ Scan Number: {scan_number}
 Scan List: {scan_list}
 Theta Scan List: {theta_list}
 Temperature: {temperature}
+Max Intensity: {cfg.max_intensity}
 Mask File: {cfg.mask_file}
 Specfile: {cfg.spec_dir}/{material}
 Temperature Directory: {os.path.dirname(image_dir)}/
@@ -180,6 +181,9 @@ def parse_args(argv=None):
                     help="Output directory; logs are written to <output-dir>/logs")
     p.add_argument("--poni-file", required=True, help="Path to the .poni calibration file")
     p.add_argument("--mask-file", required=True, help="Path to the mask .edf file")
+    p.add_argument("--max-intensity", default="1e5",
+                    help="Frames whose peak unmasked intensity exceeds this are "
+                         "dropped from the reconstruction (detector overload)")
 
     # Path-depth indices. Defaults match the standard CHESS layout:
     #   .../raw6M/<material>/<sample_name>/<temperature>/<scan_xxx>

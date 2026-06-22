@@ -5,6 +5,8 @@
 Tools for working with bounded reciprocal-space maps (RSMs): an interactive
 viewer, a processing monitor, and the shared scientific library.
 
+Created by **Ben Gregory** and **Andrej Singer**.
+
 ## Contents
 
 | File                            | Purpose                                                        |

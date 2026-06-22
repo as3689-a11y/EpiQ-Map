@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""PyQt6 beamtime monitor with substrate indexing and HKL reconstruction."""
+"""PyQt6 beamtime monitor with substrate indexing and HKL reconstruction.
+
+Created by Ben Gregory and Andrej Singer.
+"""
 
 import argparse
 import ast
@@ -28,6 +31,17 @@ def autorsm_command(opts, config_path):
     decided by the keys present in ``config_path``.
     """
     return [opts['python'], opts['autorsm'], config_path]
+
+
+def make_log_files_command(opts):
+    """Command to (re)build the per-scan config/log files: walk the raw tree
+    and read the SPEC file to identify and classify scans. Discovery only --
+    it writes log files, it does not convert anything."""
+    return [opts['python'], opts['make_log_files'],
+            '--base-dir', opts['base_dir'], '--spec-dir', opts['spec_dir'],
+            '--output-dir', opts['output_dir'], '--poni-file', opts['poni_file'],
+            '--mask-file', opts['mask_file'],
+            '--max-intensity', repr(opts['max_intensity'])]
 
 
 # autoRSM reports per-frame progress with tqdm, whose bars look like
@@ -569,12 +583,8 @@ class WatcherWorker(QtCore.QObject):
         opts = self.opts
         while not self.stopped:
             self.status.emit('Scanning for new datasets ...')
-            scan = subprocess.run([
-                opts['python'], opts['make_log_files'],
-                '--base-dir', opts['base_dir'], '--spec-dir', opts['spec_dir'],
-                '--output-dir', opts['output_dir'], '--poni-file',
-                opts['poni_file'], '--mask-file', opts['mask_file']],
-                capture_output=True, text=True, check=False)
+            scan = subprocess.run(make_log_files_command(opts),
+                                  capture_output=True, text=True, check=False)
             if scan.returncode:
                 self.status.emit(
                     f'make_log_files failed: {scan.stderr.strip()[-300:]}')
@@ -590,7 +600,8 @@ class WatcherWorker(QtCore.QObject):
                     workflow.sync_config_paths(
                         ds.config_path, poni_file=opts['poni_file'],
                         mask_file=opts['mask_file'],
-                        output_dir=opts['output_dir'], spec_dir=opts['spec_dir'])
+                        output_dir=opts['output_dir'], spec_dir=opts['spec_dir'],
+                        max_intensity=opts['max_intensity'])
                     self.status.emit(f'Processing {ds.label} ...')
                     label = f'scan {ds.scan_number}'
                     returncode, output = run_autorsm(
@@ -602,6 +613,11 @@ class WatcherWorker(QtCore.QObject):
                         self.status.emit(
                             f'autoRSM failed for scan {ds.scan_number}: '
                             f'{output[-300:]}')
+                    else:
+                        note = next((l for l in output.splitlines()
+                                     if l.startswith('Total overloaded')), '')
+                        if note:
+                            self.status.emit(f'scan {ds.scan_number}: {note}')
             if not self.stopped:
                 self._auto_index(datasets)
                 self.datasets_updated.emit(self._datasets())
@@ -632,6 +648,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self._build_ui()
         self.conversion_progress.connect(self.update_progress)
         self.refresh()
+        self.message('EpiQ-Map monitor -- created by Ben Gregory and Andrej Singer')
         self.message(f"autoRSM: {opts['python']} {opts['autorsm']}")
         self.message(f"Scanning logs in: {os.path.join(opts['output_dir'], 'logs')}")
         self._check_config()
@@ -666,7 +683,16 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.interval.setRange(5, 3600)
         self.interval.setValue(self.opts['interval'])
         bar.addWidget(self.interval)
+        self.find_button = QtWidgets.QPushButton('Find scans')
+        self.find_button.setToolTip(
+            'Walk the base folder and read the SPEC file to (re)build the '
+            'per-scan config/log files. Discovery only -- nothing is '
+            'converted. Use Refresh to just re-read existing logs.')
+        self.find_button.clicked.connect(self.discover)
+        bar.addWidget(self.find_button)
         refresh = QtWidgets.QPushButton('Refresh')
+        refresh.setToolTip('Re-read the existing log files from disk (no walk, '
+                           'no conversion).')
         refresh.clicked.connect(self.refresh)
         bar.addWidget(refresh)
         self.auto_index_button = QtWidgets.QPushButton('Auto-index missing')
@@ -729,6 +755,26 @@ class MonitorWindow(QtWidgets.QMainWindow):
     def refresh(self):
         self.set_datasets(self._load_datasets())
 
+    def discover(self):
+        """Run make_log_files once to (re)build all per-scan config/log files
+        from the base folder + SPEC file, then refresh -- no conversion."""
+        command = make_log_files_command(self.opts)
+
+        def work(status):
+            status('Walking base folder and reading SPEC file for scans ...')
+            proc = subprocess.run(command, capture_output=True, text=True)
+            if proc.returncode:
+                raise RuntimeError(proc.stderr[-2000:] or proc.stdout[-2000:])
+            found = sum(1 for line in proc.stdout.splitlines()
+                        if line.startswith('Processing '))
+            written = sum(1 for line in proc.stdout.splitlines()
+                          if 'Log file written' in line)
+            return (f'Discovery complete: {found} scan(s) found, '
+                    f'{written} new config(s) written. Use Convert (or Start '
+                    f'watching) to process them.')
+
+        self._start_task(work, 'Finding scans / building config files ...')
+
     def auto_index_missing(self):
         datasets = self._load_datasets()
 
@@ -749,7 +795,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
         changed = workflow.sync_config_paths(
             ds.config_path, poni_file=self.opts['poni_file'],
             mask_file=self.opts['mask_file'],
-            output_dir=self.opts['output_dir'], spec_dir=self.opts['spec_dir'])
+            output_dir=self.opts['output_dir'], spec_dir=self.opts['spec_dir'],
+            max_intensity=self.opts['max_intensity'])
         if changed:
             self.message(f"Updated {', '.join(changed)} in "
                          f'{os.path.basename(ds.config_path)} from current config')
@@ -768,8 +815,13 @@ class MonitorWindow(QtWidgets.QMainWindow):
                 raise RuntimeError(output[-2000:])
             saved = [line[6:] for line in output.splitlines()
                      if line.startswith('Saved ')]
+            note = next((l for l in output.splitlines()
+                         if l.startswith('Total overloaded')), '')
+            if note:
+                status(note)
             return (f'Converted scan {ds.scan_number}: '
-                    f'{saved[-1] if saved else "done"}')
+                    f'{saved[-1] if saved else "done"}'
+                    + (f' -- {note}' if note else ''))
 
         self._start_task(work, f'Converting {ds.label} ...')
 
@@ -866,6 +918,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
             return
         self.busy = True
         self.auto_index_button.setEnabled(False)
+        self.find_button.setEnabled(False)
         self.message(start_message)
         self.set_datasets(self.datasets)
         task = FunctionTask(function)
@@ -882,9 +935,10 @@ class MonitorWindow(QtWidgets.QMainWindow):
 
     def _task_finished(self):
         self.busy = False
-        # The bulk "Auto-index missing" pass conflicts with the watcher's own
-        # auto-index, so keep it disabled while the watcher owns that job.
+        # The bulk "Auto-index missing" pass and discovery conflict with the
+        # watcher (which does both itself), so keep them disabled while it runs.
         self.auto_index_button.setEnabled(self.watcher is None)
+        self.find_button.setEnabled(self.watcher is None)
         self.refresh()
 
     def find_u(self, ds, initial=None):
@@ -975,7 +1029,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         workflow.write_reconstruction_config(
             ds.config_path, config_path, metadata, ranges, shape, tag,
             custom_grid=custom_grid, matrix_type=matrix_type,
-            orientation=orientation)
+            orientation=orientation, max_intensity=self.opts['max_intensity'])
 
         command = autorsm_command(self.opts, config_path)
         command_text = shlex.join(command)
@@ -1000,7 +1054,12 @@ class MonitorWindow(QtWidgets.QMainWindow):
             workflow.append_unique_line(processed_list, command_text)
             saved = [line[6:] for line in output.splitlines()
                      if line.startswith('Saved ')]
-            return f'Reconstruction saved: {saved[-1] if saved else tag}'
+            note = next((l for l in output.splitlines()
+                         if l.startswith('Total overloaded')), '')
+            if note:
+                status(note)
+            return (f'Reconstruction saved: {saved[-1] if saved else tag}'
+                    + (f' -- {note}' if note else ''))
 
         self._start_task(work, f'Starting indexed reconstruction for {ds.label}')
 
@@ -1013,6 +1072,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
             self.opts['interval'] = self.interval.value()
             self.watch_button.setText('Stop watching')
             self.auto_index_button.setEnabled(False)
+            self.find_button.setEnabled(False)
             self.watcher_thread = QtCore.QThread()
             self.watcher = WatcherWorker(self.opts)
             self.watcher.moveToThread(self.watcher_thread)
@@ -1038,6 +1098,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.watch_button.setChecked(False)
         self.watch_button.setText('Start watching')
         self.auto_index_button.setEnabled(True)
+        self.find_button.setEnabled(True)
         self.refresh()
 
     def closeEvent(self, event):
@@ -1060,6 +1121,10 @@ def default_opts():
         'poni_file': '/nfs/chess/id4baux/2026-2/sarker-4910-a/calibrations/ceO2_15keV.poni',
         'mask_file': '/nfs/chess/id4baux/2026-2/sarker-4910-a/calibrations/mask.edf',
         'interval': 60,
+        # Frames whose peak (unmasked) intensity exceeds this are dropped from
+        # the reconstruction -- a detector overload would otherwise smear a
+        # saturation halo across the map.
+        'max_intensity': 1e5,
         'run_label': run_label,
         'python': '/nfs/chess/user/ss3428/anaconda3_jpcr/bin/python',
         'make_log_files': os.path.join(here, 'make_log_files.py'),
@@ -1123,6 +1188,8 @@ def parse_args(argv=None):
                 'lattice_file'):
         parser.add_argument('--' + key.replace('_', '-'), default=opts[key])
     parser.add_argument('--interval', type=int, default=opts['interval'])
+    parser.add_argument('--max-intensity', type=float,
+                        default=opts['max_intensity'])
     parser.add_argument('--run-label', default=opts['run_label'])
     args = parser.parse_args(argv)
     config_path = args.config
