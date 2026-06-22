@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd *)",
+      "Bash(/nfs/chess/sw/miniconda_tfuchs/bin/python -c \"import rsm_monitor,os; o=rsm_monitor.parse_args\\([]\\); print\\('make_log_files path the repo monitor calls:', o['make_log_files']\\); print\\('exists+has line:', os.path.exists\\(o['make_log_files']\\) and 'Max Intensity' in open\\(o['make_log_files']\\).read\\(\\)\\)\")"
+    ]
+  }
+}
