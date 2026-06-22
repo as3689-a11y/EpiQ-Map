@@ -71,6 +71,7 @@ def parse_config(path):
         'K Range': ast.literal_eval,
         'L Range': ast.literal_eval,
         'Grid Shape': ast.literal_eval,
+        'Output Tag': str,
     }
 
     cfg = {}
@@ -155,11 +156,20 @@ def output_filename(cfg):
     """Output filename. The 'scans_' list contains the phi scans followed
     by the theta scans, so a phi+theta (or theta-only) run is
     distinguishable from a phi-only run. Works with an empty phi list.
+
+    An explicit 'Output Tag' (set per indexed reconstruction, e.g. the
+    transfer-matrix type plus H/K/L range) names the file so the many indexed
+    maps of a single scan stay distinguishable. Without a tag, an unindexed
+    lab-frame-Q map is suffixed '_full' and a bare indexed map '_out'.
     """
     scan_nums = list(cfg.get('Scan List', [])) + \
         list(cfg.get('Theta Scan List', []))
     scans = '_'.join(str(s) for s in scan_nums)
-    return f"{cfg['Material']}_{cfg['Sample Name']}_scans_{scans}_out.nxs"
+    base = f"{cfg['Material']}_{cfg['Sample Name']}_scans_{scans}"
+    tag = cfg.get('Output Tag')
+    if tag:
+        return f"{base}_{tag}.nxs"
+    return f"{base}_{'out' if 'UB' in cfg else 'full'}.nxs"
 
 
 # ----------------------------------------------------------------------

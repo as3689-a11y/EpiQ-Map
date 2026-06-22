@@ -16,6 +16,10 @@ DEFAULT_DIRECTIONS = {
     'z': [0, 0, 1],
 }
 
+# Default substrate surface normal for the rsm_viewer-style U finder: a
+# (001)-oriented cell. The normal pins the indexed frame reproducibly.
+DEFAULT_NORMAL = [0, 0, 1]
+
 
 def load_lattice_entries(path):
     """Return ordered ``{name: (a,b,c,alpha,beta,gamma)}`` entries."""
@@ -42,6 +46,26 @@ def parse_direction(text):
     return values
 
 
+def orientation_matrix(d1, d2, d3):
+    """Output directions Q1, Q2, Q3 as the columns of a rotation matrix.
+
+    Each ``di`` is a crystal direction ``[u v w]`` in the U-aligned frame; a
+    unit step along output axis Qi then runs along ``di``. The three must be
+    mutually orthogonal. Mirrors ``rsm_viewer.orientation_matrix`` so oriented
+    reconstructions match the viewer's oriented Q axes exactly.
+    """
+    directions = np.asarray((d1, d2, d3), dtype=float)
+    if directions.shape != (3, 3) or not np.all(np.isfinite(directions)):
+        raise ValueError("orientation directions must be finite 3-vectors")
+    lengths = np.linalg.norm(directions, axis=1)
+    if np.any(lengths == 0):
+        raise ValueError("orientation directions cannot be zero")
+    directions = directions / lengths[:, None]
+    if not np.allclose(directions @ directions.T, np.eye(3), atol=1e-6):
+        raise ValueError("Q1, Q2, Q3 directions must be mutually orthogonal")
+    return directions.T
+
+
 def validate_directions(lattice, directions):
     Bstar = rl.reciprocal_matrix(*lattice, with_2pi=True)
     x, y, z = (directions[key] for key in ('x', 'y', 'z'))
@@ -66,18 +90,22 @@ def _json_value(value):
     return value
 
 
-def build_index_metadata(result, substrate, lattice, directions, source_nxs,
-                         method='manual', copied_from=None):
-    """Build the persisted U/UB record from a successful index result."""
+def build_index_metadata(result, substrate, lattice, source_nxs,
+                         method='manual', copied_from=None, normal=None):
+    """Build the persisted U/UB record from a successful index result.
+
+    The orientation is already pinned inside ``result['U']`` -- the
+    rsm_viewer finder (``compute_U_from_substrate``) bakes the chosen surface
+    normal into U, so q_measured = U @ B* @ hkl directly. Hence:
+
+      * ``UB = U @ B*`` maps hkl (reciprocal lattice units) to measured q.
+      * the saved ``U`` is the orientation-only frame (unit crystal-axis
+        directions) for autoRSM runs whose ranges are in inverse angstrom.
+    """
     U0 = np.asarray(result['U'], dtype=float)
     Bstar = np.asarray(result['Bstar'], dtype=float)
-    D = validate_directions(lattice, directions)
-
-    # One output coordinate unit follows the selected crystallographic
-    # direction. q_measured = UB @ [H,K,L] in the selected output frame.
-    UB = U0 @ Bstar @ D
-    physical = U0 @ Bstar @ D
-    view_U = physical / np.linalg.norm(physical, axis=0)
+    UB = U0 @ Bstar
+    view_U = UB / np.linalg.norm(UB, axis=0)
     view_U = rl.orthonormalize(view_U)
 
     return {
@@ -88,7 +116,7 @@ def build_index_metadata(result, substrate, lattice, directions, source_nxs,
         'copied_from': copied_from,
         'substrate': substrate,
         'lattice': list(map(float, lattice)),
-        'directions': _json_value(directions),
+        'normal': None if normal is None else [float(v) for v in normal],
         'U': view_U.tolist(),
         'orientation_U': U0.tolist(),
         'Bstar': Bstar.tolist(),
@@ -154,6 +182,51 @@ def append_unique_line(path, line):
     if line not in existing:
         with open(path, 'a') as fh:
             fh.write(line + '\n')
+
+
+def sync_config_paths(config_path, poni_file=None, mask_file=None,
+                      output_dir=None, spec_dir=None):
+    """Update a per-scan log's global beamtime paths in place from the current
+    config, then return the list of keys that changed.
+
+    make_log_files bakes PONI/Mask/Output/Specfile into each log when it is
+    first written and never rewrites an existing log, so a corrected
+    epiq_monitor.toml otherwise has no effect until the logs are deleted. This
+    reconciles those global fields (the per-scan Image/Temperature directories
+    are left alone -- they are tied to base_dir, which renames the log) so a
+    toml fix takes effect on the next conversion. Atomic replace; no-op when
+    nothing differs.
+    """
+    with open(config_path) as fh:
+        lines = fh.readlines()
+    material = next((line.split(': ', 1)[1].strip() for line in lines
+                     if line.startswith('Material: ')), None)
+    updates = {}
+    if poni_file is not None:
+        updates['PONI File'] = poni_file
+    if mask_file is not None:
+        updates['Mask File'] = mask_file
+    if output_dir is not None:
+        updates['Output Directory'] = output_dir
+    if spec_dir is not None and material is not None:
+        updates['Specfile'] = os.path.join(spec_dir, material)
+
+    changed, new_lines = [], []
+    for line in lines:
+        key = line.split(': ', 1)[0] if ': ' in line else None
+        if key in updates:
+            value = line.split(': ', 1)[1].strip()
+            if os.path.normpath(value) != os.path.normpath(updates[key]):
+                new_lines.append(f'{key}: {updates[key]}\n')
+                changed.append(key)
+                continue
+        new_lines.append(line)
+    if changed:
+        tmp = config_path + '.tmp'
+        with open(tmp, 'w') as fh:
+            fh.writelines(new_lines)
+        os.replace(tmp, config_path)
+    return changed
 
 
 def load_index_metadata(u_path):
@@ -222,8 +295,14 @@ def auto_match_substrate(data, H, K, L, lattice_file, verbose=False):
 
 def write_reconstruction_config(source_config, destination, metadata, ranges,
                                 shape, output_tag, custom_grid=True,
-                                matrix_type="UB"):
-    """Create an indexed autoRSM config without modifying the source log."""
+                                matrix_type="UB", orientation=None):
+    """Create an indexed autoRSM config without modifying the source log.
+
+    ``orientation``, if given, is a ``(Q1, Q2, Q3)`` triple of crystal
+    directions; the transfer matrix is re-oriented so each output axis runs
+    along its direction (``transfer @ orientation_matrix``), exactly like
+    rsm_viewer's oriented Q axes.
+    """
     remove = {'UB', 'Substrate Lattice Params', 'H Range', 'K Range',
               'L Range', 'Grid Shape', 'Output Tag', 'U_S Record'}
     kept = []
@@ -235,11 +314,25 @@ def write_reconstruction_config(source_config, destination, metadata, ranges,
     if matrix_type not in ('U', 'UB'):
         raise ValueError("matrix_type must be 'U' or 'UB'")
     transfer = np.asarray(metadata[matrix_type], dtype=float)
+    if orientation is not None:
+        transfer = transfer @ orientation_matrix(*orientation)
     effective_lengths = tuple(
         float(2 * np.pi / np.linalg.norm(transfer[:, axis]))
         for axis in range(3))
+    # autoRSM names the output Material_Sample_scans_N_<Output Tag>.nxs, so the
+    # tag carries the audit label plus the H/K/L range -- the audit tag's UB/U
+    # prefix marks r.l.u. vs inverse angstrom -- keeping the many indexed maps
+    # of a single scan distinguishable in indexed_objects/.
+    if custom_grid:
+        range_desc = '_'.join(
+            f'{axis}{ranges[axis][0]:g}to{ranges[axis][1]:g}'
+            for axis in ('H', 'K', 'L'))
+        out_tag = f'{output_tag}_{range_desc}'
+    else:
+        out_tag = f'{output_tag}_auto'
     values = [
         f"# Transfer Matrix Type: {matrix_type}",
+        f"Output Tag: {out_tag}",
         f"UB: {transfer.tolist()}",
     ]
     if custom_grid:

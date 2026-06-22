@@ -47,8 +47,7 @@ class Wrapper3Tests(unittest.TestCase):
             None, None, None, None, LATTICES, 'LaAlO3', peaks=peaks)
         self.assertIsNotNone(result)
         metadata = workflow.build_index_metadata(
-            result, 'LaAlO3', lattice, workflow.DEFAULT_DIRECTIONS,
-            '/tmp/source.nxs')
+            result, 'LaAlO3', lattice, '/tmp/source.nxs')
         UB = np.asarray(metadata['UB'])
         assigned = result['hkl'][result['inliers']]
         predicted = (UB @ assigned.T).T
@@ -89,9 +88,13 @@ Output Directory: /tmp/output/
             self.assertEqual((H[0], H[-1]), (-2, 2))
             np.testing.assert_allclose(UB, np.eye(3))
             self.assertTrue(out.endswith('indexed_objects'))
+            # The Output Tag carries the audit tag + H/K/L range so each
+            # indexed reconstruction of a scan lands in its own named .nxs.
+            self.assertEqual(cfg['Output Tag'],
+                             'indexed_LAO_r01_H-2to2_K-0.3to0.3_L0to5')
             self.assertEqual(
                 autoRSM.output_filename(cfg),
-                'Test_sample_scans_12_out_indexed_LAO_r01.nxs')
+                'Test_sample_scans_12_indexed_LAO_r01_H-2to2_K-0.3to0.3_L0to5.nxs')
 
     def test_metadata_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -138,10 +141,18 @@ Output Directory: /tmp/output/
             self.assertTrue(dataset.u_path().endswith('_U_S_02.txt'))
 
     @requires_autorsm
-    def test_silx_spec_reader(self):
+    def test_spec_reader_matches_autorsm_usage(self):
+        # autoRSM reads each scan through spec2nexus' SpecDataFile, then pulls
+        # per-frame columns from scan.data and fixed angles from
+        # scan.positioner (see transform_scan / theta_scan). Guard exactly
+        # that interface against a synthetic spec file.
         content = """#F synthetic.dat
+#E 1
+#D Wed Mar 25 12:00:00 2026
 #O0 th  chi  phi
+
 #S 12 ascan phi 0 1 2 1
+#D Wed Mar 25 12:00:00 2026
 #P0 1.5 2.5 3.5
 #N 3
 #L phi  ic2  detector
@@ -153,11 +164,11 @@ Output Directory: /tmp/output/
             path = os.path.join(tmp, 'spec.dat')
             with open(path, 'w') as fh:
                 fh.write(content)
-            data, positions = autoRSM.read_spec_scan(
-                path, 12, ('phi', 'ic2'), ('chi', 'th'))
-            np.testing.assert_allclose(data['phi'], [0, 0.5, 1])
-            np.testing.assert_allclose(data['ic2'], [10, 11, 12])
-            self.assertEqual(positions, {'chi': 2.5, 'th': 1.5})
+            scan = autoRSM.SpecDataFile(path).getScan(12)
+            np.testing.assert_allclose(np.asarray(scan.data['phi']), [0, 0.5, 1])
+            np.testing.assert_allclose(np.asarray(scan.data['ic2']), [10, 11, 12])
+            self.assertEqual(float(scan.positioner['chi']), 2.5)
+            self.assertEqual(float(scan.positioner['th']), 1.5)
 
     def test_original_server_config_has_only_supported_keys(self):
         metadata = {
@@ -189,7 +200,9 @@ Output Directory: /tmp/output/
             self.assertIn('UB: ', text)
             self.assertIn('Substrate Lattice Params: ', text)
             self.assertNotIn('Grid Shape:', text)
-            self.assertNotIn('Output Tag:', text)
+            # Output Tag is now a supported autoRSM key (it names the .nxs);
+            # the non-custom-grid path tags it '<audit>_auto'.
+            self.assertIn('Output Tag: ignored_auto', text)
             self.assertNotIn('U_S Record:', text)
 
     def test_autorsm_command_built_from_config(self):

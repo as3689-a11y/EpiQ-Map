@@ -8,16 +8,18 @@
 # Relative paths (e.g. autorsm, lattice_file) resolve from the repo directory.
 
 # --- Beamtime data locations (edit these each beamtime) ---
-base_dir   = "/nfs/chess/id4b/2024-2/gregory-3864-b/raw6M/"
-spec_dir   = "/nfs/chess/id4b/2024-2/gregory-3864-b/"
-output_dir = "/nfs/chess/id4baux/2024-2/gregory-3864-b/processed/output/"
-poni_file  = "/nfs/chess/id4baux/2024-2/gregory-3864-b/calibrations/ceO2_15keV.poni"
-mask_file  = "/nfs/chess/id4baux/2024-2/gregory-3864-b/calibrations/mask.edf"
+base_dir   = "/nfs/chess/id4b/2023-3/gregory-3864-a/raw6M/"
+spec_dir   = "/nfs/chess/id4b/2023-3/gregory-3864-a/"
+output_dir = "/nfs/chess/id4baux/2023-3/gregory-3864-a/processed/output/"
+poni_file  = "/nfs/chess/id4baux/2023-3/gregory-3864-a/calibrations/CeO2_15keV.poni"
+mask_file  = "/nfs/chess/id4baux/2023-3/gregory-3864-a/calibrations/mask.edf"
 
 # --- Tools ---
 # Interpreter that runs autoRSM. A bare name like "python" uses whatever is on
-# PATH (the active environment); give a full path to pin a specific interpreter.
-python  = "python"
+# PATH (the active environment) -- which often lacks the area-detector stack
+# (fabio/pyFAI/spec2nexus) autoRSM needs, so conversions fail at import. Pin a
+# full path to an interpreter that has the stack.
+python  = "/nfs/chess/sw/miniconda_tfuchs/bin/python"
 # autoRSM script; bundled in the repo by default.
 autorsm = "HKL_Convert/autoRSM.py"
 

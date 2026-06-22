@@ -2,10 +2,11 @@
 """
 make_log_files.py
 
-Walks a beamtime's raw image directory tree, finds scan directories with
-image data, classifies each scan (theta vs. other) by reading the SPEC
-file's scan header, writes a per-scan log file describing the scan, and
-builds a command list to run autoRSM_labframe_Lorentz.py on each.
+Walks a beamtime's raw image directory tree, finds scan directories,
+and classifies each scan (theta vs. phi) by reading the SPEC file's scan
+header. The SPEC file -- not a file-count heuristic -- decides what is a
+real scan and which motor it scanned, then a per-scan log file (a
+self-contained autoRSM config) is written for each.
 
 Directory depth assumption: scan directories are expected at a fixed
 depth under BASE_DIR, with material, sample_name, temperature, and
@@ -109,10 +110,11 @@ def write_log_file(log_content, root, log_dir):
 def traverse_and_write_logs(cfg):
     """Walk cfg.base_dir, and at every directory matching cfg.scan_depth,
     extract material / sample / temperature / scan number from the path,
-    count image files, and -- if there are enough to count as a real
-    scan -- look up the scan's motor in the SPEC file and write a per-scan
-    log file (a self-contained autoRSM config you can also rerun by hand).
-    Returns the list of log files written."""
+    then look the scan up in the SPEC file. The SPEC file is the source of
+    truth: a directory is a real scan only if its number appears there, and
+    its scanned motor decides whether it is a theta scan or a phi scan. The
+    matching per-scan log file (a self-contained autoRSM config you can also
+    rerun by hand) is written. Returns the list of log files written."""
     log_count = 0
     written = []
 
@@ -130,24 +132,21 @@ def traverse_and_write_logs(cfg):
             print(f"Skipping {root}: can't parse scan number from directory name")
             continue
 
-        num_files = sum(1 for entry in os.scandir(root) if entry.is_file())
-        if num_files <= cfg.min_files_for_scan:
-            continue
-
-        print(f"Processing {root} ({num_files} files)")
-
+        # Whether this directory is a real scan -- and whether it is a theta
+        # or phi scan -- comes straight from the SPEC file, not from how many
+        # image files happen to be on disk. A scan number not present in the
+        # SPEC file is not a scan we process.
         spec_path = os.path.join(cfg.spec_dir, material)
         motor = get_scan_motor(spec_path, scan_number)
-
         if motor is None:
-            print(f"  Scan {scan_number} not found in {spec_path}; skipping")
             continue
 
         if motor == "th":
             scan_list, theta_list = [], [scan_number]
         else:
             scan_list, theta_list = [scan_number], []
-        print(f"  Motor: {motor!r} -> scan_list={scan_list}, theta_list={theta_list}")
+        print(f"Processing {root}: scan {scan_number}, motor {motor!r} "
+              f"-> scan_list={scan_list}, theta_list={theta_list}")
 
         log_content = generate_log_content(
             root, temperature, material, sample_name,
@@ -192,8 +191,6 @@ def parse_args(argv=None):
     p.add_argument("--scan-dir-idx", type=int, default=10, help="Path index of the scan_xxx directory")
 
     # Scan inclusion / processing
-    p.add_argument("--min-files-for-scan", type=int, default=1000,
-                    help="A directory only counts as a real scan if it has more than this many image files")
     p.add_argument("--max-log-files", type=int, default=1000,
                     help="Safety limit on number of logs written in one run")
 

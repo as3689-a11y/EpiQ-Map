@@ -7,9 +7,11 @@ would produce and whether it already exists. Used by watch_and_process.sh
 to skip datasets that are already done, independently of the
 processed-commands ledger.
 
-The output-naming logic here MUST match autoRSM.py:
-    {Material}_{Sample Name}_scans_{phi+theta scans}_out.nxs
-in indexed_objects/ (if a UB is present) or transformed_objects/ (if not).
+The output-naming logic here MUST match autoRSM.output_filename:
+    {Material}_{Sample Name}_scans_{phi+theta scans}_{Output Tag}.nxs
+when an Output Tag is set, else _full.nxs (unindexed lab-frame Q) or
+_out.nxs (bare indexed), in indexed_objects/ (if a UB is present) or
+transformed_objects/ (if not).
 
 Exit status:
     0  output exists       (prints: DONE <path>)
@@ -22,7 +24,6 @@ Usage:
 
 import ast
 import os
-import re
 import sys
 
 
@@ -45,9 +46,12 @@ def output_path(cfg):
     theta_list = ast.literal_eval(cfg.get('Theta Scan List', '[]'))
     scans = list(scan_list) + list(theta_list)
     scan_str = '_'.join(str(s) for s in scans)
-    stem = f"{material}_{sample}_scans_{scan_str}_out"
-    tag = re.sub(r'[^A-Za-z0-9_.-]+', '-', cfg.get('Output Tag', '')).strip('-')
-    fname = f"{stem}_{tag}.nxs" if tag else f"{stem}.nxs"
+    base = f"{material}_{sample}_scans_{scan_str}"
+    tag = cfg.get('Output Tag', '').strip()
+    if tag:
+        fname = f"{base}_{tag}.nxs"
+    else:
+        fname = f"{base}_{'out' if 'UB' in cfg else 'full'}.nxs"
 
     out_dir = cfg['Output Directory']
     subdir = 'indexed_objects' if 'UB' in cfg else 'transformed_objects'

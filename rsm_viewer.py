@@ -80,6 +80,25 @@ def load_substrate_names(path: str = LATTICE_FILE) -> list[str]:
     return names
 
 
+def monitor_output_dir() -> str:
+    """Output directory configured in epiq_monitor.toml (next to this script),
+    used as the initial folder when browsing for .nxs files. Returns '' if the
+    file or key is missing, so the dialog just opens at its default location.
+    """
+    toml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "epiq_monitor.toml")
+    try:
+        try:
+            import tomllib as toml
+        except ModuleNotFoundError:
+            import tomli as toml
+        with open(toml_path, "rb") as handle:
+            out = toml.load(handle).get("output_dir", "")
+        return out if isinstance(out, str) and os.path.isdir(out) else ""
+    except Exception:
+        return ""
+
+
 def validate_u_matrix(value: Any) -> np.ndarray:
     matrix = np.asarray(value, dtype=float)
     if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
@@ -631,7 +650,22 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
             self.qbox = qbox
             self.memory = QLabel(); layout.addWidget(self.memory)
             for n in self.counts: n.valueChanged.connect(self.update_memory)
+            self.load_grid = QPushButton("Load H/K/L grid from file")
+            self.load_grid.setToolTip("Fill the Q1/Q2/Q3 ranges and sample counts "
+                                      "from the loaded .nxs axes (and reset the "
+                                      "directions to [100], [010], [001]).")
+            self.load_grid.clicked.connect(self.load_grid_from_file)
+            layout.addWidget(self.load_grid)
             self.run = QPushButton("Interpolate region"); self.run.clicked.connect(self.interpolate); layout.addWidget(self.run)
+            # Show the loaded .nxs straight onto its own H/K/L grid, no
+            # resampling -- for files that are already indexed (e.g. a UB
+            # reconstruction from rsm_monitor), so no interpolation is needed.
+            self.as_is = QPushButton("Display as is (no interpolation)")
+            self.as_is.setToolTip("Display the loaded file on its native H/K/L "
+                                  "axes without resampling. Use when the .nxs is "
+                                  "already reconstructed in the desired frame.")
+            self.as_is.clicked.connect(self.display_as_is)
+            layout.addWidget(self.as_is)
             buttons = QHBoxLayout()
             for text, callback in (("Save region", self.save), ("Load region", self.load),
                                    ("Reset view", controller.viewer.reset_view),
@@ -664,7 +698,7 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
         def choose_source(self) -> None:
             # Allow selecting several scans to co-add (same RSM/U/grid). They are
             # combined with nanmean at load time; mismatched grids are rejected.
-            paths, _ = QFileDialog.getOpenFileNames(self, "Open autoRSM file(s)", "", "NeXus (*.nxs)")
+            paths, _ = QFileDialog.getOpenFileNames(self, "Open autoRSM file(s)", monitor_output_dir(), "NeXus (*.nxs)")
             if not paths:
                 return
             self._source_paths = [os.path.abspath(p) for p in paths]
@@ -772,6 +806,58 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
         def finished(self, model: RegionModel) -> None:
             controller.show_model(model, self.mode.currentText()); self.run.setEnabled(True)
             self.status.setText(f"Displayed {model.volume.shape}, {model.volume.nbytes/2**20:.1f} MiB float32")
+
+        def display_as_is(self) -> None:
+            """Show the source volume directly, without interpolation."""
+            try:
+                sources = self._selected_sources()
+                if not sources:
+                    raise ValueError("select a .nxs source file")
+                if controller.needs_reload(sources):
+                    n = len(sources)
+                    msg = "Loading source data..." if n == 1 else f"Co-adding {n} scans..."
+                    self.status.setText(msg); QApplication.processEvents()
+                    controller.load_source(sources)
+                # The file's array is (H, K, L); napari volume axes run
+                # (Q3, Q2, Q1), so present it as (L, K, H) to match the
+                # interpolated view's orientation. No resampling -- identity U.
+                data = np.asarray(controller.source_data, dtype=np.float32)
+                volume = np.ascontiguousarray(data.transpose(2, 1, 0))
+                axes = tuple(controller.source_axes[i] for i in (2, 1, 0))
+                settings = dict(orientation=("L", "K", "H"), units="as-is",
+                                shape=volume.shape, order=0)
+                model = RegionModel(volume, axes, np.eye(3),
+                                    controller.source_path, settings)
+                controller.show_model(model, self.mode.currentText())
+                self.status.setText(
+                    f"Displayed as is {volume.shape}, "
+                    f"{volume.nbytes / 2**20:.1f} MiB float32")
+            except Exception as exc:
+                self.error(exc)
+
+        def load_grid_from_file(self) -> None:
+            """Populate the Q1/Q2/Q3 ranges and sample counts from the loaded
+            file's native H/K/L axes (directions reset to the identity frame)."""
+            try:
+                sources = self._selected_sources()
+                if not sources:
+                    raise ValueError("select a .nxs source file")
+                if controller.needs_reload(sources):
+                    self.status.setText("Loading source data..."); QApplication.processEvents()
+                    controller.load_source(sources)
+                # Q1, Q2, Q3 default to H, K, L; take each range/count from it.
+                for (lo, hi), count, axis in zip(self.limits, self.counts,
+                                                 controller.source_axes):
+                    lo.setValue(float(axis[0])); hi.setValue(float(axis[-1]))
+                    count.setValue(int(len(axis)))
+                for edit, text in zip(self.orient, ("1 0 0", "0 1 0", "0 0 1")):
+                    edit.setText(text)
+                self.update_memory()
+                H, K, L = controller.source_axes
+                self.status.setText(
+                    f"Loaded grid from file: {len(H)} x {len(K)} x {len(L)}")
+            except Exception as exc:
+                self.error(exc)
 
         def save(self) -> None:
             if controller.model is None: self.error(ValueError("nothing to save")); return
@@ -972,6 +1058,12 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
             self.use_region = QPushButton("Copy orientation from region")
             self.use_region.clicked.connect(self.copy_orientation)
             layout.addWidget(self.use_region)
+            self.load_grid = QPushButton("Load H/K/L grid from file")
+            self.load_grid.setToolTip("Fill the in-plane (H, K) ranges/samples and "
+                                      "the out-of-plane L slab from the loaded "
+                                      ".nxs axes.")
+            self.load_grid.clicked.connect(self.load_grid_from_file)
+            layout.addWidget(self.load_grid)
             buttons = QHBoxLayout()
             self.gen = QPushButton("Generate image"); self.gen.clicked.connect(self.generate)
             self.export = QPushButton("Export image..."); self.export.clicked.connect(self.export_image)
@@ -984,6 +1076,32 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
             q1, q2, q3 = (format_direction(d) for d in self.region.read_orientation())
             self.dirs[0].setText(q1); self.dirs[1].setText(q2); self.slab_dir.setText(q3)
             self.status.setText("Copied orientation from region panel")
+
+        def load_grid_from_file(self) -> None:
+            """Fill the in-plane (H, K) axes and the L slab from the loaded
+            file's native axes; the source is chosen in the region panel."""
+            try:
+                sources = self.region._selected_sources()
+                if not sources:
+                    raise ValueError("select a .nxs source file in the region panel")
+                if controller.needs_reload(sources):
+                    self.status.setText("Loading source data..."); QApplication.processEvents()
+                    controller.load_source(sources)
+                H, K, L = controller.source_axes
+                self.dirs[0].setText("1 0 0"); self.dirs[1].setText("0 1 0")
+                self.slab_dir.setText("0 0 1")
+                for (lo, hi), count, axis in zip(self.lims, self.counts, (H, K)):
+                    lo.setValue(float(axis[0])); hi.setValue(float(axis[-1]))
+                    count.setValue(int(len(axis)))
+                self.slab_center.setValue(float((L[0] + L[-1]) / 2))
+                self.slab_thick.setValue(float(L[-1] - L[0]))
+                self.slab_n.setValue(int(len(L)))
+                self.status.setText(
+                    f"Loaded grid from file: in-plane {len(H)} x {len(K)}, "
+                    f"slab N={len(L)}")
+            except Exception as exc:
+                self.status.setText(f"Error: {exc}")
+                QMessageBox.critical(self, "EpiQ-Map image", str(exc))
 
         def _oriented_u(self):
             # in-plane h, v + slab -> volume-axis directions for transform_slab.
@@ -1077,16 +1195,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     except ImportError as exc:
         print(f"Missing GUI dependency: {exc}\nInstall with:\n  {_install_command()}", file=sys.stderr)
         return 2
-    viewer = napari.Viewer(title="EpiQ-Map")
+    viewer = napari.Viewer(title="EpiQ-Map_viewer")
     viewer.theme = "light"
     controller = RSMViewerController(viewer, args.memory_limit_mb)
     if args.u_matrix:
         try: controller.set_u(load_U_matrix(args.u_matrix))
         except Exception as exc: print(f"Could not load U matrix: {exc}", file=sys.stderr)
     region_dock, line_dock, image_dock = build_gui(controller, args)
+    # Stack the three tall panels as tabs in one dock area rather than three
+    # stacked panels; show the RSM region tab first.
     region_handle = viewer.window.add_dock_widget(region_dock, name="RSM region", area="right")
-    line_handle = viewer.window.add_dock_widget(line_dock, name="Line cuts", area="right")
-    image_handle = viewer.window.add_dock_widget(image_dock, name="RSM image", area="right")
+    line_handle = viewer.window.add_dock_widget(line_dock, name="Line cuts", area="right", tabify=True)
+    image_handle = viewer.window.add_dock_widget(image_dock, name="RSM image", area="right", tabify=True)
+    region_handle.raise_()
     # Keep handles so a closed dock can be re-shown. napari also lists them
     # under the Window menu; region_dock gets a button as a guaranteed path.
     controller.dock_handles = {"region": region_handle, "line": line_handle,

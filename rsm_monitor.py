@@ -30,6 +30,99 @@ def autorsm_command(opts, config_path):
     return [opts['python'], opts['autorsm'], config_path]
 
 
+# autoRSM reports per-frame progress with tqdm, whose bars look like
+#   scan 18:  45%|####5     | 9/20 [00:03<00:04,  2.7it/s]
+# refreshed in place with carriage returns. We stream the process output,
+# split on either newline or carriage return, and pull the live percentage
+# out of each refreshed bar so the GUI can show a progress bar.
+_TQDM_RE = re.compile(r'(\d+)%\|.*?(\d+)/(\d+)')
+
+
+def _iter_segments(stream):
+    """Yield text delimited by newline OR carriage return, so tqdm's
+    \\r-refreshed progress arrives one update at a time rather than in one
+    blob at the end."""
+    buf = []
+    while True:
+        ch = stream.read(1)
+        if not ch:
+            if buf:
+                yield ''.join(buf)
+            return
+        if ch in '\r\n':
+            if buf:
+                yield ''.join(buf)
+                buf = []
+        else:
+            buf.append(ch)
+
+
+def _parse_tqdm(segment):
+    """Return ``(percent, 'n/total')`` from a tqdm bar line, else ``None``."""
+    match = _TQDM_RE.search(segment)
+    if not match:
+        return None
+    percent, n, total = (int(group) for group in match.groups())
+    return min(100, percent), f'{n}/{total}'
+
+
+def run_autorsm(command, on_progress):
+    """Run autoRSM, forwarding live tqdm progress to ``on_progress(percent,
+    text)`` as it streams. Returns ``(returncode, non_progress_output)`` --
+    the non-progress lines (config echo, 'Saved ...', errors) joined for the
+    caller to parse or report."""
+    proc = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = []
+    for segment in _iter_segments(proc.stdout):
+        parsed = _parse_tqdm(segment)
+        if parsed:
+            on_progress(*parsed)
+        elif segment.strip():
+            lines.append(segment.strip())
+    proc.wait()
+    return proc.returncode, '\n'.join(lines)
+
+
+def validate_opts(opts):
+    """Return a list of human-readable problems with the configured paths.
+
+    Catches the common per-beamtime config mistakes early -- a stale mask or
+    poni left pointing at the previous beamtime, a wrong base/spec directory,
+    an empty raw tree -- so they surface at launch with a clear message
+    instead of deep inside autoRSM at conversion time. Empty list means OK.
+    """
+    problems = []
+    # Files autoRSM and the helper tools must be able to open.
+    for key in ('poni_file', 'mask_file', 'autorsm', 'make_log_files',
+                'lattice_file'):
+        path = opts.get(key)
+        if path and not os.path.isfile(path):
+            problems.append(f'{key}: file not found: {path}')
+    # The interpreter: a bare name is resolved on PATH; a path must exist.
+    python = opts.get('python')
+    if python and os.sep in python and not os.path.isfile(python):
+        problems.append(f'python: interpreter not found: {python}')
+    elif python and os.sep not in python and shutil.which(python) is None:
+        problems.append(f'python: not found on PATH: {python}')
+    # Directories that must exist; the raw tree and spec dir must be non-empty.
+    for key in ('base_dir', 'spec_dir'):
+        path = opts.get(key)
+        if path and not os.path.isdir(path):
+            problems.append(f'{key}: directory not found: {path}')
+        elif path and not os.listdir(path):
+            problems.append(f'{key}: directory is empty: {path}')
+    # output_dir is created on demand, so only its parent needs to be writable.
+    out = opts.get('output_dir')
+    if out and not os.path.isdir(out):
+        parent = os.path.dirname(os.path.abspath(out.rstrip(os.sep)))
+        if not os.path.isdir(parent):
+            problems.append(f'output_dir: parent does not exist: {parent}')
+        elif not os.access(parent, os.W_OK):
+            problems.append(f'output_dir: parent not writable: {parent}')
+    return problems
+
+
 class Dataset:
     def __init__(self, config_path):
         self.config_path = config_path
@@ -61,28 +154,62 @@ class Dataset:
                 bool(ast.literal_eval(self.cfg.get('Theta Scan List', '[]'))))
 
     @property
+    def scan_kind(self):
+        """'theta' (rocking) or 'phi' (rotation), read from the SPEC-derived
+        scan lists -- the same classification make_log_files writes."""
+        return 'theta' if self.is_theta_only else 'phi'
+
+    @property
+    def image_count(self):
+        """Number of .cbf frames currently in the scan's image directory, or
+        None if it can't be read. Counted live (so it grows as a scan runs)
+        and memoized per Dataset instance."""
+        if not hasattr(self, '_image_count'):
+            image_dir = self.cfg.get('Image Directory')
+            count = None
+            if image_dir and os.path.isdir(image_dir):
+                try:
+                    count = sum(1 for entry in os.scandir(image_dir)
+                                if entry.name.endswith('cbf'))
+                except OSError:
+                    count = None
+            self._image_count = count
+        return self._image_count
+
+    @property
     def label(self):
         scans = ','.join(map(str, self.scans))
-        suffix = ' [theta]' if self.is_theta_only else ''
+        images = self.image_count
+        img_text = f'{images} imgs' if images is not None else '? imgs'
         return (f"{self.cfg['Material']} / {self.cfg['Sample Name']} / "
-                f"{self.cfg.get('Temperature', '?')} / scan {scans}{suffix}")
+                f"{self.cfg.get('Temperature', '?')} / scan {scans} "
+                f"({self.scan_kind}, {img_text})")
+
+    def _output_candidates(self):
+        """The transformed-map output paths to look for, newest naming first:
+        autoRSM now writes the unindexed map as '_full.nxs'; '_out.nxs' is the
+        legacy name, kept so conversions from before the rename still resolve.
+        """
+        scan_text = '_'.join(map(str, self.scans))
+        stem = (f"{self.cfg['Material']}_{self.cfg['Sample Name']}_scans_"
+                f"{scan_text}")
+        directory = os.path.join(self.cfg['Output Directory'],
+                                 'transformed_objects')
+        return [os.path.join(directory, stem + '_full.nxs'),
+                os.path.join(directory, stem + '_out.nxs')]
 
     def base_output(self):
-        scan_text = '_'.join(map(str, self.scans))
-        name = (f"{self.cfg['Material']}_{self.cfg['Sample Name']}_scans_"
-                f"{scan_text}_out.nxs")
-        return os.path.join(self.cfg['Output Directory'],
-                            'transformed_objects', name)
+        return self._output_candidates()[0]
 
     def resolved_output(self):
-        path = self.base_output()
-        if os.path.exists(path):
-            return path
-        stem = path[:-4]
-        for _ in range(50):
-            stem += '_more'
-            if os.path.exists(stem + '.nxs'):
-                return stem + '.nxs'
+        for path in self._output_candidates():
+            if os.path.exists(path):
+                return path
+            stem = path[:-4]
+            for _ in range(50):
+                stem += '_more'
+                if os.path.exists(stem + '.nxs'):
+                    return stem + '.nxs'
         return None
 
     def u_base(self):
@@ -176,15 +303,18 @@ class IndexDialog(QtWidgets.QDialog):
         if initial and initial.get('substrate') in entries:
             self.substrate.setCurrentText(initial['substrate'])
         form.addRow('Substrate:', self.substrate)
-        self.directions = {}
-        defaults = (initial or {}).get('directions', workflow.DEFAULT_DIRECTIONS)
-        for key in ('x', 'y', 'z'):
-            edit = QtWidgets.QLineEdit(' '.join(map(str, defaults[key])))
-            edit.setPlaceholderText('1 0 0')
-            self.directions[key] = edit
-            form.addRow(f'{key} direction:', edit)
+        # Same finder as rsm_viewer's "Calculate U": a substrate surface normal
+        # (h k l) pins the indexed frame reproducibly; two in-plane axes are
+        # derived from it. Blank leaves the orientation unconstrained.
+        normal = (initial or {}).get('normal') or workflow.DEFAULT_NORMAL
+        self.normal = QtWidgets.QLineEdit(' '.join(
+            str(int(v)) if float(v).is_integer() else f'{v:g}' for v in normal))
+        self.normal.setPlaceholderText('0 0 1')
+        self.normal.setToolTip('Substrate surface normal (h k l); pins U for a '
+                               'reproducible orientation. Blank = unconstrained.')
+        form.addRow('Surface normal:', self.normal)
         self.save_ub = QtWidgets.QCheckBox(
-            'Also save scaled UB_S matrix (inverse angstrom)')
+            'Also save scaled UB_S matrix (r.l.u.)')
         self.save_ub.setChecked((initial or {}).get('save_scaled_ub', True))
         form.addRow('', self.save_ub)
         buttons = QtWidgets.QDialogButtonBox(
@@ -195,10 +325,9 @@ class IndexDialog(QtWidgets.QDialog):
         form.addRow(buttons)
 
     def values(self):
-        return self.substrate.currentText(), {
-            key: workflow.parse_direction(edit.text())
-            for key, edit in self.directions.items()
-        }, self.save_ub.isChecked()
+        text = self.normal.text().strip()
+        normal = workflow.parse_direction(text) if text else None
+        return self.substrate.currentText(), normal, self.save_ub.isChecked()
 
 
 class DimensionsDialog(QtWidgets.QDialog):
@@ -231,17 +360,28 @@ class DimensionsDialog(QtWidgets.QDialog):
 
         self.custom_grid = QtWidgets.QCheckBox(
             'Use custom H/K/L ranges and grid shape')
+        # Default to editable ranges, like rsm_viewer's oriented-axis grid;
+        # uncheck to let autoRSM pick its automatic ranges and 1000^3 grid.
+        self.custom_grid.setChecked(True)
         form.addRow('', self.custom_grid)
         layout.addLayout(form)
 
+        # Oriented Q axes, like rsm_viewer: each output axis carries a crystal
+        # direction [u v w] plus its range cut. Default Q1=[100], Q2=[010],
+        # Q3=[001] reproduces the unrotated H/K/L frame.
         grid = QtWidgets.QGridLayout()
-        grid.addWidget(QtWidgets.QLabel('Axis'), 0, 0)
-        grid.addWidget(QtWidgets.QLabel('Minimum'), 0, 1)
-        grid.addWidget(QtWidgets.QLabel('Maximum'), 0, 2)
-        grid.addWidget(QtWidgets.QLabel('Points'), 0, 3)
-        defaults = {'H': (-4, 4, 300), 'K': (-4, 4, 300), 'L': (0, 6, 300)}
+        for col, header in enumerate(
+                ('Axis', 'Direction [u v w]', 'Minimum', 'Maximum', 'Points')):
+            grid.addWidget(QtWidgets.QLabel(header), 0, col)
+        defaults = {'H': ('1 0 0', -4, 4, 300),
+                    'K': ('0 1 0', -4, 4, 300),
+                    'L': ('0 0 1', 0, 6, 300)}
+        labels = {'H': 'Q1 (H)', 'K': 'Q2 (K)', 'L': 'Q3 (L)'}
         self.axes = {}
+        self.directions = {}
         for row, axis in enumerate(('H', 'K', 'L'), 1):
+            direction = QtWidgets.QLineEdit(defaults[axis][0])
+            direction.setPlaceholderText('1 0 0')
             lo = QtWidgets.QDoubleSpinBox()
             hi = QtWidgets.QDoubleSpinBox()
             for box in (lo, hi):
@@ -249,14 +389,16 @@ class DimensionsDialog(QtWidgets.QDialog):
                 box.setDecimals(5)
             count = QtWidgets.QSpinBox()
             count.setRange(2, 4000)
-            lo.setValue(defaults[axis][0])
-            hi.setValue(defaults[axis][1])
-            count.setValue(defaults[axis][2])
+            lo.setValue(defaults[axis][1])
+            hi.setValue(defaults[axis][2])
+            count.setValue(defaults[axis][3])
             self.axes[axis] = (lo, hi, count)
-            grid.addWidget(QtWidgets.QLabel(axis), row, 0)
-            grid.addWidget(lo, row, 1)
-            grid.addWidget(hi, row, 2)
-            grid.addWidget(count, row, 3)
+            self.directions[axis] = direction
+            grid.addWidget(QtWidgets.QLabel(labels[axis]), row, 0)
+            grid.addWidget(direction, row, 1)
+            grid.addWidget(lo, row, 2)
+            grid.addWidget(hi, row, 3)
+            grid.addWidget(count, row, 4)
         layout.addLayout(grid)
 
         self.info = QtWidgets.QLabel()
@@ -313,6 +455,10 @@ class DimensionsDialog(QtWidgets.QDialog):
         version, path, metadata = self.u_selector.currentData()
         selected = dict(metadata, u_s_record=os.path.abspath(path),
                         u_s_version=version)
+        directions = tuple(workflow.parse_direction(self.directions[axis].text())
+                           for axis in ('H', 'K', 'L'))
+        # Validate orthogonality up front (raises on a bad Q1/Q2/Q3 triple).
+        workflow.orientation_matrix(*directions)
         ranges = {}
         shape = []
         for axis, (lo, hi, count) in self.axes.items():
@@ -324,12 +470,14 @@ class DimensionsDialog(QtWidgets.QDialog):
         if not tag:
             raise ValueError('audit tag cannot be empty')
         return (selected, self.matrix_type.currentData(),
-                self.custom_grid.isChecked(), ranges, tuple(shape), tag)
+                self.custom_grid.isChecked(), ranges, tuple(shape), tag,
+                directions)
 
 
 class WatcherWorker(QtCore.QObject):
     datasets_updated = QtCore.pyqtSignal(list)
     status = QtCore.pyqtSignal(str)
+    progress = QtCore.pyqtSignal(int, str)
     finished = QtCore.pyqtSignal()
 
     def __init__(self, opts):
@@ -365,58 +513,71 @@ class WatcherWorker(QtCore.QObject):
                 continue
             if ds.attempt_path() and os.path.exists(ds.attempt_path()):
                 continue
-            if ds.is_theta_only:
-                source = by_scan.get(ds.scan_number - 1)
-                if source and source.metadata():
-                    metadata = source.metadata()
-                    metadata = dict(metadata, method='copied',
-                                    copied_from=source.resolved_output(),
-                                    source_nxs=ds.resolved_output())
-                    workflow.save_index_metadata(ds.next_u_path(), metadata)
-                    self.status.emit(f'Copied U into theta scan {ds.scan_number}')
-                continue
-            self.status.emit(f'Auto-indexing {ds.label} ...')
-            data, H, K, L = workflow.rl.load_rsm(ds.resolved_output())
+            # Isolate each scan: a manual index can run concurrently and win
+            # the race to write a U_S record (FileExistsError), and a single
+            # unreadable .nxs should not take the whole watcher down.
             try:
-                match = workflow.auto_match_substrate(
-                    data, H, K, L, self.opts['lattice_file'])
-            finally:
-                del data
-            if match['accepted']:
-                name, lattice, result = match['best']
-                metadata = workflow.build_index_metadata(
-                    result, name, lattice, workflow.DEFAULT_DIRECTIONS,
-                    ds.resolved_output(), method='automatic')
-                metadata['save_scaled_ub'] = True
+                self._auto_index_one(ds, by_scan)
+            except Exception as exc:
+                self.status.emit(
+                    f'Auto-index skipped scan {ds.scan_number}: {exc}')
+
+    def _auto_index_one(self, ds, by_scan):
+        if ds.is_theta_only:
+            source = by_scan.get(ds.scan_number - 1)
+            if source and source.metadata():
+                metadata = source.metadata()
+                metadata = dict(metadata, method='copied',
+                                copied_from=source.resolved_output(),
+                                source_nxs=ds.resolved_output())
                 workflow.save_index_metadata(ds.next_u_path(), metadata)
-                self.status.emit(
-                    f'Auto-indexed scan {ds.scan_number}: {name}, '
-                    f"{result['n_inliers']} inliers, RMS {result['rms']:.4g}")
-            else:
-                summary = {
-                    'reason': match['reason'],
-                    'candidates': [
-                        {'substrate': name, 'n_inliers': res['n_inliers'],
-                         'rms_A^-1': res['rms']}
-                        for name, _, res in match['ranked'][:10]],
-                }
-                with open(ds.attempt_path(), 'w') as fh:
-                    json.dump(summary, fh, indent=2)
-                self.status.emit(
-                    f'Auto-index scan {ds.scan_number}: {match["reason"]}; '
-                    'manual choice required')
+                self.status.emit(f'Copied U into theta scan {ds.scan_number}')
+            return
+        self.status.emit(f'Auto-indexing {ds.label} ...')
+        data, H, K, L = workflow.rl.load_rsm(ds.resolved_output())
+        try:
+            match = workflow.auto_match_substrate(
+                data, H, K, L, self.opts['lattice_file'])
+        finally:
+            del data
+        if match['accepted']:
+            name, lattice, result = match['best']
+            metadata = workflow.build_index_metadata(
+                result, name, lattice,
+                ds.resolved_output(), method='automatic')
+            metadata['save_scaled_ub'] = True
+            workflow.save_index_metadata(ds.next_u_path(), metadata)
+            self.status.emit(
+                f'Auto-indexed scan {ds.scan_number}: {name}, '
+                f"{result['n_inliers']} inliers, RMS {result['rms']:.4g}")
+        else:
+            summary = {
+                'reason': match['reason'],
+                'candidates': [
+                    {'substrate': name, 'n_inliers': res['n_inliers'],
+                     'rms_A^-1': res['rms']}
+                    for name, _, res in match['ranked'][:10]],
+            }
+            with open(ds.attempt_path(), 'w') as fh:
+                json.dump(summary, fh, indent=2)
+            self.status.emit(
+                f'Auto-index scan {ds.scan_number}: {match["reason"]}; '
+                'manual choice required')
 
     @QtCore.pyqtSlot()
     def run(self):
         opts = self.opts
         while not self.stopped:
             self.status.emit('Scanning for new datasets ...')
-            subprocess.run([
+            scan = subprocess.run([
                 opts['python'], opts['make_log_files'],
                 '--base-dir', opts['base_dir'], '--spec-dir', opts['spec_dir'],
                 '--output-dir', opts['output_dir'], '--poni-file',
                 opts['poni_file'], '--mask-file', opts['mask_file']],
                 capture_output=True, text=True, check=False)
+            if scan.returncode:
+                self.status.emit(
+                    f'make_log_files failed: {scan.stderr.strip()[-300:]}')
             datasets = self._datasets()
             self.datasets_updated.emit(datasets)
             for ds in datasets:
@@ -426,12 +587,21 @@ class WatcherWorker(QtCore.QObject):
                     continue
                 command = self._command_for(ds)
                 if command:
+                    workflow.sync_config_paths(
+                        ds.config_path, poni_file=opts['poni_file'],
+                        mask_file=opts['mask_file'],
+                        output_dir=opts['output_dir'], spec_dir=opts['spec_dir'])
                     self.status.emit(f'Processing {ds.label} ...')
-                    proc = subprocess.run(command, capture_output=True, text=True)
-                    if proc.returncode:
+                    label = f'scan {ds.scan_number}'
+                    returncode, output = run_autorsm(
+                        command,
+                        lambda pct, text, lbl=label:
+                            self.progress.emit(pct, f'{lbl}  {text}'))
+                    self.progress.emit(0, '')
+                    if returncode:
                         self.status.emit(
                             f'autoRSM failed for scan {ds.scan_number}: '
-                            f'{proc.stderr[-300:]}')
+                            f'{output[-300:]}')
             if not self.stopped:
                 self._auto_index(datasets)
                 self.datasets_updated.emit(self._datasets())
@@ -444,8 +614,11 @@ class WatcherWorker(QtCore.QObject):
 
 class MonitorWindow(QtWidgets.QMainWindow):
     stop_watcher = QtCore.pyqtSignal()
-    COLUMNS = ('Dataset', 'Scan done', 'Config', 'Output', 'Index / U',
-               'Reconstruct')
+    # Progress from a manual reconstruction (runs on the thread pool); the
+    # watcher has its own progress signal. Both drive the bottom progress bar.
+    conversion_progress = QtCore.pyqtSignal(int, str)
+    COLUMNS = ('Dataset', 'Scan done', 'Config', 'Output', 'Convert',
+               'Index / U', 'Reconstruct')
 
     def __init__(self, opts):
         super().__init__()
@@ -457,12 +630,28 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.pool = QtCore.QThreadPool.globalInstance()
         self.lattices = workflow.load_lattice_entries(opts['lattice_file'])
         self._build_ui()
+        self.conversion_progress.connect(self.update_progress)
         self.refresh()
         self.message(f"autoRSM: {opts['python']} {opts['autorsm']}")
         self.message(f"Scanning logs in: {os.path.join(opts['output_dir'], 'logs')}")
+        self._check_config()
+
+    def _check_config(self):
+        """Preflight the configured paths and surface any problems at launch."""
+        problems = validate_opts(self.opts)
+        if not problems:
+            self.message('Config check: all data paths present.')
+            return
+        for problem in problems:
+            self.message(f'CONFIG PROBLEM -- {problem}')
+        QtWidgets.QMessageBox.warning(
+            self, 'Configuration problems',
+            'These configured paths look wrong. Fix epiq_monitor.toml (or '
+            'override on the command line) and restart:\n\n  - '
+            + '\n  - '.join(problems))
 
     def _build_ui(self):
-        self.setWindowTitle('autoRSM monitor - wrapper3')
+        self.setWindowTitle('EpiQ-Map_monitor')
         self.resize(1250, 650)
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -504,7 +693,19 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.log.setFixedHeight(160)
         self.log.setStyleSheet('font-family: monospace; font-size: 11px;')
         layout.addWidget(self.log)
+        # Live autoRSM conversion progress (parsed from its tqdm output).
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.progress.setFormat('idle')
+        layout.addWidget(self.progress)
         self.statusBar().showMessage('Idle')
+
+    def update_progress(self, percent, text):
+        """Drive the bottom progress bar from a conversion's tqdm output."""
+        self.progress.setValue(percent)
+        self.progress.setFormat(f'{text}  %p%' if text else 'idle')
 
     def message(self, text):
         from datetime import datetime
@@ -539,6 +740,39 @@ class MonitorWindow(QtWidgets.QMainWindow):
 
         self._start_task(work, 'Starting automatic substrate matching ...')
 
+    def convert(self, ds):
+        """Run autoRSM on a single scan now, without the watcher and without
+        waiting for the queue. Streams progress to the bottom bar."""
+        if ds.resolved_output():
+            self.message(f'Scan {ds.scan_number} is already converted.')
+            return
+        changed = workflow.sync_config_paths(
+            ds.config_path, poni_file=self.opts['poni_file'],
+            mask_file=self.opts['mask_file'],
+            output_dir=self.opts['output_dir'], spec_dir=self.opts['spec_dir'])
+        if changed:
+            self.message(f"Updated {', '.join(changed)} in "
+                         f'{os.path.basename(ds.config_path)} from current config')
+        command = autorsm_command(self.opts, ds.config_path)
+        command_text = shlex.join(command)
+
+        def work(status):
+            status(f'Converting {ds.label} ...')
+            status('RUN: ' + command_text)
+            returncode, output = run_autorsm(
+                command,
+                lambda pct, text: self.conversion_progress.emit(
+                    pct, f'scan {ds.scan_number}  {text}'))
+            self.conversion_progress.emit(0, '')
+            if returncode:
+                raise RuntimeError(output[-2000:])
+            saved = [line[6:] for line in output.splitlines()
+                     if line.startswith('Saved ')]
+            return (f'Converted scan {ds.scan_number}: '
+                    f'{saved[-1] if saved else "done"}')
+
+        self._start_task(work, f'Converting {ds.label} ...')
+
     def _check_item(self, yes):
         item = QtWidgets.QTableWidgetItem('yes' if yes else '-')
         item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -555,13 +789,22 @@ class MonitorWindow(QtWidgets.QMainWindow):
             self.table.setItem(row, 1, self._check_item(True))
             self.table.setItem(row, 2, self._check_item(True))
             self.table.setItem(row, 3, self._check_item(bool(ds.resolved_output())))
-            self.table.setCellWidget(row, 4, self._index_widget(ds))
+            convert = QtWidgets.QPushButton('Convert')
+            # Convert one scan on demand -- no need to start the watcher or wait
+            # for the queue. Disabled once the scan already has an output .nxs.
+            convert.setEnabled(not ds.resolved_output() and not self.busy)
+            convert.clicked.connect(
+                lambda _checked=False, dataset=ds: self.convert(dataset))
+            self.table.setCellWidget(row, 4, convert)
+            self.table.setCellWidget(row, 5, self._index_widget(ds))
             reconstruct = QtWidgets.QPushButton('Run U / UB...')
-            reconstruct.setEnabled(bool(ds.resolved_output()) and not self.busy
-                                   and self.watcher is None)
+            # Enabled for any converted scan, even while the watcher runs:
+            # reconstruction acts only on an existing .nxs and writes uniquely
+            # named outputs, so it does not collide with the watcher.
+            reconstruct.setEnabled(bool(ds.resolved_output()) and not self.busy)
             reconstruct.clicked.connect(
                 lambda _checked=False, dataset=ds: self.reconstruct(dataset))
-            self.table.setCellWidget(row, 5, reconstruct)
+            self.table.setCellWidget(row, 6, reconstruct)
         self.count.setText(f'{len(datasets)} datasets')
 
     def _index_widget(self, ds):
@@ -583,8 +826,9 @@ class MonitorWindow(QtWidgets.QMainWindow):
         button = QtWidgets.QToolButton()
         button.setText('Actions')
         button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        button.setEnabled(bool(ds.resolved_output()) and not self.busy
-                          and self.watcher is None)
+        # Per-scan indexing stays available while the watcher runs (see
+        # _start_task): it only touches already-converted scans.
+        button.setEnabled(bool(ds.resolved_output()) and not self.busy)
         menu = QtWidgets.QMenu(button)
         find_action = menu.addAction('Find new U_S...')
         find_action.triggered.connect(
@@ -612,8 +856,13 @@ class MonitorWindow(QtWidgets.QMainWindow):
         return choices[labels.index(selected)] if ok else None
 
     def _start_task(self, function, start_message):
-        if self.busy or self.watcher is not None:
-            self.message('Stop the watcher and wait for the current task first.')
+        # A manual index/reconstruct may run alongside the watcher -- it acts
+        # only on already-converted scans, and U_S records are written with
+        # exclusive create, so a rare overlap with the watcher's auto-index
+        # surfaces as an error instead of corrupting a record. Only one manual
+        # task at a time, though.
+        if self.busy:
+            self.message('Wait for the current manual task to finish.')
             return
         self.busy = True
         self.auto_index_button.setEnabled(False)
@@ -633,7 +882,9 @@ class MonitorWindow(QtWidgets.QMainWindow):
 
     def _task_finished(self):
         self.busy = False
-        self.auto_index_button.setEnabled(True)
+        # The bulk "Auto-index missing" pass conflicts with the watcher's own
+        # auto-index, so keep it disabled while the watcher owns that job.
+        self.auto_index_button.setEnabled(self.watcher is None)
         self.refresh()
 
     def find_u(self, ds, initial=None):
@@ -641,8 +892,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         try:
-            substrate, directions, save_ub = dialog.values()
-            workflow.validate_directions(self.lattices[substrate], directions)
+            substrate, normal, save_ub = dialog.values()
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, 'Invalid indexing setup', str(exc))
             return
@@ -651,16 +901,18 @@ class MonitorWindow(QtWidgets.QMainWindow):
             status(f'Loading {os.path.basename(ds.resolved_output())} ...')
             data, H, K, L = workflow.rl.load_rsm(ds.resolved_output())
             try:
-                result = workflow.index_with_substrate(
+                # The exact rsm_viewer finder: find peaks, then index against
+                # the substrate cell with the surface normal pinning U.
+                result = workflow.rl.compute_U_from_substrate(
                     data, H, K, L, self.opts['lattice_file'], substrate,
-                    directions=directions, verbose=False)
+                    normal=normal, verbose=False)
             finally:
                 del data
             if result is None:
                 raise RuntimeError(f'No consistent {substrate} indexing found')
             metadata = workflow.build_index_metadata(
-                result, substrate, self.lattices[substrate], directions,
-                ds.resolved_output(), method='manual')
+                result, substrate, self.lattices[substrate],
+                ds.resolved_output(), method='manual', normal=normal)
             metadata['save_scaled_ub'] = save_ub
             saved_path = ds.next_u_path()
             workflow.save_index_metadata(saved_path, metadata)
@@ -681,7 +933,11 @@ class MonitorWindow(QtWidgets.QMainWindow):
                         copied_from=source.resolved_output(),
                         source_nxs=ds.resolved_output())
         saved_path = ds.next_u_path()
-        workflow.save_index_metadata(saved_path, metadata)
+        try:
+            workflow.save_index_metadata(saved_path, metadata)
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(self, 'Copy U failed', str(exc))
+            return
         self.message(f'Copied U from scan {source.scan_number} to {ds.scan_number}')
         self.refresh()
 
@@ -704,7 +960,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
         try:
-            metadata, matrix_type, custom_grid, ranges, shape, tag = dialog.values()
+            (metadata, matrix_type, custom_grid, ranges, shape, tag,
+             orientation) = dialog.values()
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, 'Invalid selection', str(exc))
             return
@@ -717,7 +974,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
             os.path.join(recon_dir, config_name))
         workflow.write_reconstruction_config(
             ds.config_path, config_path, metadata, ranges, shape, tag,
-            custom_grid=custom_grid, matrix_type=matrix_type)
+            custom_grid=custom_grid, matrix_type=matrix_type,
+            orientation=orientation)
 
         command = autorsm_command(self.opts, config_path)
         command_text = shlex.join(command)
@@ -732,13 +990,15 @@ class MonitorWindow(QtWidgets.QMainWindow):
             status(f'Reconstructing scan {ds.scan_number} as {tag} with '
                    f'the existing autoRSM ({matrix_type}) ...')
             status('RUN: ' + command_text)
-            proc = subprocess.run(
+            returncode, output = run_autorsm(
                 command,
-                capture_output=True, text=True)
-            if proc.returncode:
-                raise RuntimeError(proc.stderr[-2000:] or proc.stdout[-2000:])
+                lambda pct, text: self.conversion_progress.emit(
+                    pct, f'{tag}  {text}'))
+            self.conversion_progress.emit(0, '')
+            if returncode:
+                raise RuntimeError(output[-2000:])
             workflow.append_unique_line(processed_list, command_text)
-            saved = [line[6:] for line in proc.stdout.splitlines()
+            saved = [line[6:] for line in output.splitlines()
                      if line.startswith('Saved ')]
             return f'Reconstruction saved: {saved[-1] if saved else tag}'
 
@@ -759,6 +1019,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
             self.watcher_thread.started.connect(self.watcher.run)
             self.watcher.datasets_updated.connect(self.set_datasets)
             self.watcher.status.connect(self.message)
+            self.watcher.progress.connect(self.update_progress)
             self.watcher.finished.connect(self.watcher_thread.quit)
             self.stop_watcher.connect(self.watcher.stop)
             self.watcher_thread.start()
