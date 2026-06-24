@@ -19,6 +19,11 @@ import traceback
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+# This process is PyQt6. rsm_viewer_CTR imports Qt through qtpy (so it can also
+# run inside the PyQt5 napari viewer), so pin qtpy to PyQt6 before importing it,
+# otherwise qtpy would default to PyQt5 and mix bindings in this process.
+os.environ.setdefault('QT_API', 'pyqt6')
+
 import rsm_workflow as workflow
 import rsm_viewer_CTR as ctr
 

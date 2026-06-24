@@ -27,7 +27,11 @@ Created by Ben Gregory and Andrej Singer, Cornell University.
 import traceback
 
 import numpy as np
-from PyQt6 import QtCore, QtWidgets
+# Qt comes through qtpy, not a fixed binding: this module is imported by both the
+# PyQt6 monitor and the napari viewer (which runs PyQt5, the only binding whose
+# OpenGL stack works here). qtpy follows whichever Qt the host process already
+# uses, so the dialogs are never a foreign-binding child of their parent.
+from qtpy import QtCore, QtWidgets
 
 import rsm_workflow as workflow
 
@@ -206,9 +210,9 @@ def integrate_rod(data, H, K, L, int_box, bkg_box=None):
 # ----------------------------------------------------------------------
 
 class _Signals(QtCore.QObject):
-    status = QtCore.pyqtSignal(str)
-    done = QtCore.pyqtSignal(object)
-    error = QtCore.pyqtSignal(str)
+    status = QtCore.Signal(str)
+    done = QtCore.Signal(object)
+    error = QtCore.Signal(str)
 
 
 class _Task(QtCore.QRunnable):
@@ -217,7 +221,7 @@ class _Task(QtCore.QRunnable):
         self.function = function
         self.signals = _Signals()
 
-    @QtCore.pyqtSlot()
+    @QtCore.Slot()
     def run(self):
         try:
             self.signals.done.emit(self.function(self.signals.status.emit))
