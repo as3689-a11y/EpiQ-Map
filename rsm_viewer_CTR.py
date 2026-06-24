@@ -312,25 +312,21 @@ class ProjectionWindow(QtWidgets.QDialog):
 
 
 class RodBoxViewer(QtWidgets.QDialog):
-    """Draw an integration box (red) and a background box (magenta) on a rod.
+    """Integrate a rod over an (H, K) box, with an optional background box.
 
-    The rod volume is shown as three projections: the H-K face (summed along L),
-    where each box is a draggable rectangle, and the two side faces (H-L and K-L,
-    summed along the other in-plane axis), where the same box appears as a
-    full-height vertical band -- the two vertical lines bounding its H or K
-    window. Dragging any view keeps the others in sync; the background-subtracted
-    I(L) profile (``integrate_rod``) updates live and can be saved as CSV.
+    Both boxes are given as numeric H/K min-max ranges (like rsm_viewer's region
+    ranges) rather than drawn -- the integration box and a checkable background
+    box. "Natural ranges" fills both with the rod's full H-K extent as a starting
+    point. The background-subtracted I(L) profile (``integrate_rod``) updates live
+    and can be saved as CSV.
     """
-
-    # red (integration), magenta (background)
-    COLORS = {'int': (220, 40, 40), 'bkg': (210, 40, 210)}
 
     def __init__(self, data, H, K, L, title='', parent=None):
         super().__init__(parent)
         self.setWindowTitle(f'Rod integration box{f" - {title}" if title else ""}')
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
-        self.resize(900, 720)
+        self.resize(560, 560)
         layout = QtWidgets.QVBoxLayout(self)
         try:
             import pyqtgraph as pg
@@ -343,57 +339,57 @@ class RodBoxViewer(QtWidgets.QDialog):
         self.H = np.asarray(H, float)
         self.K = np.asarray(K, float)
         self.L = np.asarray(L, float)
-        self.proj = rod_projections(self.data)
-        self._syncing = False
         self._last = None                              # (L, I) for Save CSV
-        self._items = {}                               # name -> (roi, hreg, kreg)
 
-        # default boxes: integration over the central half of the H-K window,
-        # background offset to the high-H, high-K corner of the same size.
-        h0, h1 = self._frac(self.H, 0.25), self._frac(self.H, 0.75)
-        k0, k1 = self._frac(self.K, 0.25), self._frac(self.K, 0.75)
-        hw, kw = (h1 - h0), (k1 - k0)
-        self.boxes = {
-            'int': [h0, h1, k0, k1],
-            'bkg': [self._frac(self.H, 0.75), self._frac(self.H, 0.95),
-                    self._frac(self.K, 0.75), self._frac(self.K, 0.95)],
-        }
+        # The rod's full in-plane extent -- the "natural" ranges.
+        self._natural = (float(self.H[0]), float(self.H[-1]),
+                         float(self.K[0]), float(self.K[-1]))
+        h0, h1, k0, k1 = self._natural
+        natural = QtWidgets.QLabel(
+            f'Natural rod ranges:  H [{h0:.4f}, {h1:.4f}]   '
+            f'K [{k0:.4f}, {k1:.4f}]')
+        natural.setWordWrap(True)
+        layout.addWidget(natural)
 
-        grid = QtWidgets.QGridLayout()
-        self.z_plot = self._image_plot('Z', 'H (r.l.u.)', 'K (r.l.u.)',
-                                       self.H, self.K)
-        self.kl_plot = self._image_plot('KL', 'K (r.l.u.)', 'L (r.l.u.)',
-                                        self.K, self.L)
-        self.hl_plot = self._image_plot('HL', 'H (r.l.u.)', 'L (r.l.u.)',
-                                        self.H, self.L)
-        self.profile = pg.PlotWidget()
-        self.profile.setLabel('bottom', 'L', units='rlu')
-        self.profile.setLabel('left', 'Integrated intensity')
-        self.profile.showGrid(x=True, y=True, alpha=0.25)
-        self.profile.setLogMode(y=True)
-        grid.addWidget(self.z_plot, 0, 0)
-        grid.addWidget(self.kl_plot, 0, 1)
-        grid.addWidget(self.hl_plot, 1, 0)
-        grid.addWidget(self.profile, 1, 1)
-        layout.addLayout(grid)
-
-        for name in ('int', 'bkg'):
-            self._build_box(name)
+        # Integration box defaults to the central half; the background box to a
+        # narrow band just outside it on the high-H side.
+        boxes_row = QtWidgets.QHBoxLayout()
+        self.int_group, self.int_spins = self._box_group(
+            'Integration box', (self._frac(self.H, 0.25),
+                                self._frac(self.H, 0.75),
+                                self._frac(self.K, 0.25),
+                                self._frac(self.K, 0.75)))
+        self.bkg_group, self.bkg_spins = self._box_group(
+            'Background box', (self._frac(self.H, 0.75),
+                               self._frac(self.H, 0.95),
+                               self._frac(self.K, 0.25),
+                               self._frac(self.K, 0.75)), checkable=True)
+        boxes_row.addWidget(self.int_group)
+        boxes_row.addWidget(self.bkg_group)
+        layout.addLayout(boxes_row)
 
         controls = QtWidgets.QHBoxLayout()
-        self.use_bkg = QtWidgets.QCheckBox('Subtract background box')
-        self.use_bkg.setChecked(True)
-        self.use_bkg.toggled.connect(self._toggle_bkg)
+        natural_button = QtWidgets.QPushButton('Natural ranges')
+        natural_button.setToolTip("Fill both boxes with the rod's full H-K "
+                                  'extent.')
+        natural_button.clicked.connect(self._fill_natural)
         self.log_y = QtWidgets.QCheckBox('Log Y')
         self.log_y.setChecked(True)
         self.log_y.toggled.connect(lambda on: self.profile.setLogMode(y=on))
         save = QtWidgets.QPushButton('Save profile CSV')
         save.clicked.connect(self._save)
-        controls.addWidget(self.use_bkg)
+        controls.addWidget(natural_button)
         controls.addWidget(self.log_y)
         controls.addStretch()
         controls.addWidget(save)
         layout.addLayout(controls)
+
+        self.profile = pg.PlotWidget()
+        self.profile.setLabel('bottom', 'L', units='rlu')
+        self.profile.setLabel('left', 'Integrated intensity')
+        self.profile.showGrid(x=True, y=True, alpha=0.25)
+        self.profile.setLogMode(y=True)
+        layout.addWidget(self.profile, 1)
         self.status = QtWidgets.QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -406,107 +402,73 @@ class RodBoxViewer(QtWidgets.QDialog):
     def _frac(axis, fraction):
         return float(axis[0] + fraction * (axis[-1] - axis[0]))
 
-    def _image_plot(self, key, x_label, y_label, x_axis, y_axis):
-        pg = self.pg
-        plot = pg.PlotWidget()
-        plot.setLabel('bottom', x_label)
-        plot.setLabel('left', y_label)
-        image = np.log1p(np.clip(np.nan_to_num(self.proj[key]), 0, None))
-        item = pg.ImageItem(image, axisOrder='row-major')
-        x0, x1 = float(x_axis[0]), float(x_axis[-1])
-        y0, y1 = float(y_axis[0]), float(y_axis[-1])
-        item.setRect(QtCore.QRectF(x0, y0, x1 - x0, y1 - y0))
-        plot.addItem(item)
-        plot.setXRange(x0, x1, padding=0.02)
-        plot.setYRange(y0, y1, padding=0.02)
-        return plot
+    def _spin(self, value):
+        box = QtWidgets.QDoubleSpinBox()
+        box.setRange(-10000, 10000)
+        box.setDecimals(4)
+        box.setSingleStep(0.001)
+        box.setValue(value)
+        box.valueChanged.connect(self._refresh)
+        return box
 
-    def _build_box(self, name):
-        pg = self.pg
-        color = self.COLORS[name]
-        h_lo, h_hi, k_lo, k_hi = self.boxes[name]
-        roi = pg.RectROI([h_lo, k_lo], [h_hi - h_lo, k_hi - k_lo],
-                         pen=pg.mkPen(color, width=2), movable=True,
-                         resizable=True)
-        roi.addScaleHandle([1, 1], [0, 0])
-        roi.addScaleHandle([0, 0], [1, 1])
-        self.z_plot.addItem(roi)
-        pen, brush = pg.mkPen(color, width=2), pg.mkBrush(*color, 50)
-        hreg = pg.LinearRegionItem([h_lo, h_hi], orientation='vertical',
-                                   pen=pen, brush=brush)
-        kreg = pg.LinearRegionItem([k_lo, k_hi], orientation='vertical',
-                                   pen=pen, brush=brush)
-        self.hl_plot.addItem(hreg)
-        self.kl_plot.addItem(kreg)
-        roi.sigRegionChanged.connect(lambda _=None, n=name: self._on_roi(n))
-        hreg.sigRegionChanged.connect(lambda _=None, n=name: self._on_hreg(n))
-        kreg.sigRegionChanged.connect(lambda _=None, n=name: self._on_kreg(n))
-        self._items[name] = (roi, hreg, kreg)
+    def _box_group(self, title, defaults, checkable=False):
+        """A group of H min/max, K min/max spin boxes. Returns (group, spins)."""
+        group = QtWidgets.QGroupBox(title)
+        if checkable:
+            group.setCheckable(True)
+            group.setChecked(True)
+            group.toggled.connect(self._refresh)
+        form = QtWidgets.QFormLayout(group)
+        h_lo, h_hi, k_lo, k_hi = defaults
+        spins = {'h_lo': self._spin(h_lo), 'h_hi': self._spin(h_hi),
+                 'k_lo': self._spin(k_lo), 'k_hi': self._spin(k_hi)}
+        for label, lo, hi in (('H', spins['h_lo'], spins['h_hi']),
+                              ('K', spins['k_lo'], spins['k_hi'])):
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(QtWidgets.QLabel('min'))
+            row.addWidget(lo)
+            row.addWidget(QtWidgets.QLabel('max'))
+            row.addWidget(hi)
+            form.addRow(f'{label}:', self._wrap(row))
+        return group, spins
 
-    # -- live synchronisation ------------------------------------------------
+    @staticmethod
+    def _wrap(layout):
+        widget = QtWidgets.QWidget()
+        widget.setLayout(layout)
+        return widget
 
-    def _on_roi(self, name):
-        if self._syncing:
-            return
-        roi, _, _ = self._items[name]
-        pos, size = roi.pos(), roi.size()
-        self.boxes[name] = [pos[0], pos[0] + size[0], pos[1], pos[1] + size[1]]
-        self._apply(name, skip_roi=True)
-        self._refresh()
+    @staticmethod
+    def _box_values(spins):
+        return (spins['h_lo'].value(), spins['h_hi'].value(),
+                spins['k_lo'].value(), spins['k_hi'].value())
 
-    def _on_hreg(self, name):
-        if self._syncing:
-            return
-        lo, hi = self._items[name][1].getRegion()
-        self.boxes[name][0:2] = [lo, hi]
-        self._apply(name, skip_hreg=True)
-        self._refresh()
-
-    def _on_kreg(self, name):
-        if self._syncing:
-            return
-        lo, hi = self._items[name][2].getRegion()
-        self.boxes[name][2:4] = [lo, hi]
-        self._apply(name, skip_kreg=True)
-        self._refresh()
-
-    def _apply(self, name, skip_roi=False, skip_hreg=False, skip_kreg=False):
-        """Push ``self.boxes[name]`` to the three widgets, skipping the source."""
-        roi, hreg, kreg = self._items[name]
-        h_lo, h_hi, k_lo, k_hi = self.boxes[name]
-        self._syncing = True
-        try:
-            if not skip_roi:
-                roi.setPos([h_lo, k_lo], finish=False)
-                roi.setSize([h_hi - h_lo, k_hi - k_lo], finish=False)
-            if not skip_hreg:
-                hreg.setRegion([h_lo, h_hi])
-            if not skip_kreg:
-                kreg.setRegion([k_lo, k_hi])
-        finally:
-            self._syncing = False
-
-    def _toggle_bkg(self, on):
-        for item in self._items['bkg']:
-            item.setVisible(on)
+    def _fill_natural(self):
+        for spins in (self.int_spins, self.bkg_spins):
+            for key, value in zip(('h_lo', 'h_hi', 'k_lo', 'k_hi'),
+                                  self._natural):
+                spins[key].blockSignals(True)
+                spins[key].setValue(value)
+                spins[key].blockSignals(False)
         self._refresh()
 
     def _refresh(self):
-        bkg = self.boxes['bkg'] if self.use_bkg.isChecked() else None
+        bkg = (self._box_values(self.bkg_spins)
+               if self.bkg_group.isChecked() else None)
         try:
             L, intensity = integrate_rod(self.data, self.H, self.K, self.L,
-                                         tuple(self.boxes['int']), bkg)
+                                         self._box_values(self.int_spins), bkg)
         except ValueError as exc:
             self.status.setText(str(exc))
             return
         self._last = (L, intensity)
         self.profile.clear()
-        self.profile.plot(L, intensity, pen=self.pg.mkPen(self.COLORS['int'],
+        self.profile.plot(L, intensity, pen=self.pg.mkPen((220, 40, 40),
                                                           width=2))
-        h_lo, h_hi, k_lo, k_hi = self.boxes['int']
+        h_lo, h_hi, k_lo, k_hi = self._box_values(self.int_spins)
         self.status.setText(
             f'Integration H [{h_lo:.4f}, {h_hi:.4f}], K [{k_lo:.4f}, {k_hi:.4f}]'
-            + (f'  -  background subtracted' if bkg is not None else ''))
+            + ('  -  background subtracted' if bkg is not None else ''))
 
     def _save(self):
         if self._last is None:

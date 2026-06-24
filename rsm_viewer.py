@@ -16,6 +16,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+# Pin Qt to PyQt6 so the whole stack is one binding: napari/qtpy here, the
+# PyQt6 monitor, and the PyQt6 rsm_viewer_CTR dialogs all match. Without this
+# qtpy would default to PyQt5 and child dialogs from the CTR module would be
+# rejected as foreign-binding widgets. Must run before qtpy/napari import.
+os.environ.setdefault("QT_API", "pyqt6")
+
 import numpy as np
 from scipy.ndimage import map_coordinates
 
