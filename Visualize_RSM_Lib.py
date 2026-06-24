@@ -61,20 +61,66 @@ def fi(axis, value):
     return int(np.argmin(np.abs(np.asarray(axis) - value)))
 
 
+# A single rod inside a multi-rod CTR file (autoRSM_rods) is addressed as
+# "file.nxs::rod_<h>_<k>" so the whole viewer pipeline (load_source, caching,
+# interpolation) can treat one rod exactly like a standalone .nxs.
+ROD_TOKEN = '::'
+
+
 def load_rsm(path):
     """Load an autoRSM NeXus file fully into memory.
 
     Returns (data, H, K, L). Loading once makes every projection, slice,
     and interpolator construction run at memory speed; keeping the lazy
     NXfield re-reads the volume from disk on each access.
+
+    A ``"file.nxs::rod_<h>_<k>"`` token loads that single rod from a multi-rod
+    CTR file (see ``load_rod``) instead of the default ``entry/data`` group.
     """
+    file_path, _, group = str(path).partition(ROD_TOKEN)
+    if group:
+        return load_rod(file_path, group)
     from nexusformat.nexus import nxload, nxsetconfig
     nxsetconfig(memory=8000)
-    a = nxload(path)
+    a = nxload(file_path)
     H = np.array(a.entry.data.H, dtype=float)
     K = np.array(a.entry.data.K, dtype=float)
     L = np.array(a.entry.data.L, dtype=float)
     data = np.asarray(a.entry.data.counts, dtype=np.float32)
+    return data, H, K, L
+
+
+def list_rods(path):
+    """List the rods in a multi-rod CTR file (``autoRSM_rods`` output).
+
+    Returns ``[(h0, k0, group_name), ...]`` sorted by (h0, k0), or ``[]`` if
+    ``path`` is an ordinary single-volume .nxs. Each ``group_name`` pairs with
+    ``path`` as ``f"{path}{ROD_TOKEN}{group_name}"`` for ``load_rsm``.
+    """
+    from nexusformat.nexus import nxload
+    file_path = str(path).partition(ROD_TOKEN)[0]
+    entry = nxload(file_path).entry
+    rods = []
+    for name in entry.entries:
+        if not name.startswith('rod_'):
+            continue
+        node = entry[name]
+        try:
+            rods.append((int(node['h0']), int(node['k0']), name))
+        except Exception:
+            continue
+    return sorted(rods)
+
+
+def load_rod(path, group):
+    """Load one rod's volume ``(data, H, K, L)`` from a multi-rod CTR file."""
+    from nexusformat.nexus import nxload, nxsetconfig
+    nxsetconfig(memory=8000)
+    node = nxload(str(path).partition(ROD_TOKEN)[0]).entry[group]
+    H = np.array(node.H, dtype=float)
+    K = np.array(node.K, dtype=float)
+    L = np.array(node.L, dtype=float)
+    data = np.asarray(node.counts, dtype=np.float32)
     return data, H, K, L
 
 

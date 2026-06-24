@@ -13,6 +13,7 @@ Created by **Ben Gregory** and **Andrej Singer**.
 |---------------------------------|----------------------------------------------------------------|
 | `rsm_viewer.py`                 | EpiQ-Map napari viewer: load a volume, set/compute/save U, orient the Q1/Q2/Q3 axes, interpolate a bounded region, take overlaid line cuts. |
 | `rsm_monitor.py`                | Qt monitor: watch an output directory, index against substrates, run reconstructions. |
+| `rsm_viewer_CTR.py`             | Monitor extension: define and launch high-resolution HKL-rod (CTR) reconstructions for a group of phi scans. |
 | `rsm_workflow.py`               | Scientific + persistence helpers used by the monitor.          |
 | `Visualize_RSM_Lib.py`          | Shared library: loading, U-matrix indexing, slab transforms.   |
 | `substrate_lattice_constants.txt` | Substrate cells (LaAlO3, SrTiO3, LSAT, ...) for U calculation. |
@@ -77,6 +78,17 @@ The **Line cuts** dock (right) takes axis-aligned or arbitrary-line cuts. Plots
 plot, with a checklist to toggle curves on/off for comparison, and **Clear
 all** to reset. **Save CSV** / **Copy CSV** export the most recent cut.
 
+## Viewer: HKL rods (CTR)
+
+The **RSM rods** dock opens a multi-rod CTR file (the `autoRSM_rods` output --
+one `NXdata` per rod). **Open rod file…** lists the rods by `(h, k)`;
+**Show rod in viewer** makes the chosen rod the active volume, so the RSM
+region / image / line-cut docks all operate on that one rod (it is loaded as
+`file.nxs::rod_<h>_<k>`). **Plot rod profile** / **Plot all** overlay the
+integrated rod intensity *I(L)* (sum or mean over the H/K window), accumulating
+as named curves with **Log Y** and **Save CSV** -- the CTR line shapes side by
+side.
+
 ## Running
 
     conda activate viz
@@ -95,11 +107,43 @@ with:
 The monitor's reconstruction calls the production `autoRSM.py` via a configured
 path; see `HKL_Convert/README.md`.
 
+## Monitor: CTR rods (high-resolution HKL rods)
+
+For crystal-truncation-rod work the monitor can reconstruct a small,
+high-resolution sampling of just the HKL rods instead of one big coarse cube.
+Select a group of phi-scan rows (click the **Dataset** column) and press
+**CTR rods…**:
+
+1. **Find UB** -- pick a substrate (and surface normal) and re-index every
+   selected scan's volume against it; the per-scan orientations are averaged
+   into one UB. Two non-blocking helper windows open on demand and can be closed
+   (window **X**) without interrupting setup:
+   - **Found peaks…** -- a table of the found-and-indexed peaks (`hkl`, `|q|`,
+     residual, inlier) so you can see what is there; **Add selected (h, k) as
+     rods** turns reflections into rods.
+   - **Projection…** -- the data summed along the substrate normal, with the two
+     in-plane crystal directions on the axes.
+2. **HKL rods** -- set integer **H** and **K** ranges and **Populate pairs** to
+   list every `(h, k)`, or **From indexed peaks**; delete rows to make the set
+   sparse. **L** spans the full range at high resolution (default 2000 points)
+   and each rod is a narrow **(H, K) window** about its center (default ±0.1,
+   100 points). The **Coordinates** directions rotate the rod axes to chosen
+   crystal directions (like the viewer's oriented Q axes).
+
+`autoRSM_rods.py` then reconstructs every rod in a **single pass** over the CBF
+frames (read once; each rod is binned with its own tight, self-clipping grid).
+The output is one NeXus file under `{Output Directory}/rod_objects/` with **one
+`NXdata` per rod** (`rod_<h>_<k>`, each carrying its own `H`, `K`, `L`,
+`counts`, `norm`) plus the averaged `UB`, substrate lattice, and scan list.
+
 ## Tests
 
-    conda run -n viz python -m unittest test_rsm_viewer
+    conda run -n viz python -m unittest test_rsm_viewer test_rsm_viewer_CTR
 
-`test_rsm_viewer.py` covers the GUI-independent helpers (cuts, interpolation,
-U-from-normal, equal-axes scaling, file naming). The acquisition tests in
+`test_rsm_viewer.py` covers the GUI-independent viewer helpers (cuts,
+interpolation, U-from-normal, equal-axes scaling, file naming).
+`test_rsm_viewer_CTR.py` covers the CTR-rod helpers (pair population, U
+averaging, rod-config round trip; the rod-grid/kernel tests need the
+`HKL_Convert/` acquisition stack and skip without it). The acquisition tests in
 `test_wrapper3.py` (pytest) are skipped until the `HKL_Convert/` stack is in
 place.

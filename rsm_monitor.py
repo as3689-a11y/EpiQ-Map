@@ -20,6 +20,7 @@ import traceback
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 import rsm_workflow as workflow
+import rsm_viewer_CTR as ctr
 
 
 def autorsm_command(opts, config_path):
@@ -108,8 +109,8 @@ def validate_opts(opts):
     """
     problems = []
     # Files autoRSM and the helper tools must be able to open.
-    for key in ('poni_file', 'mask_file', 'autorsm', 'make_log_files',
-                'lattice_file'):
+    for key in ('poni_file', 'mask_file', 'autorsm', 'autorsm_rods',
+                'make_log_files', 'lattice_file'):
         path = opts.get(key)
         if path and not os.path.isfile(path):
             problems.append(f'{key}: file not found: {path}')
@@ -347,10 +348,21 @@ class IndexDialog(QtWidgets.QDialog):
 class DimensionsDialog(QtWidgets.QDialog):
     """Choose U/UB and optional grids for the existing compatible autoRSM."""
 
-    def __init__(self, records, parent=None):
+    def __init__(self, records, parent=None, batch=False):
         super().__init__(parent)
-        self.setWindowTitle('Run existing autoRSM with U or UB')
+        self.batch = batch
+        self.setWindowTitle('Batch U/UB on selected scans' if batch
+                            else 'Run existing autoRSM with U or UB')
         layout = QtWidgets.QVBoxLayout(self)
+        if batch:
+            note = QtWidgets.QLabel(
+                'Batch mode: each selected scan uses its own latest U_S record. '
+                'The transfer matrix, grid, orientation, and tag below apply to '
+                'all selected scans (the orientation shown is the first scan\'s, '
+                'for reference).')
+            note.setWordWrap(True)
+            note.setStyleSheet('color: #c8a200;')
+            layout.addWidget(note)
         form = QtWidgets.QFormLayout()
 
         self.u_selector = QtWidgets.QComboBox()
@@ -363,7 +375,10 @@ class DimensionsDialog(QtWidgets.QDialog):
             label = (f'{os.path.basename(path)[:-5]} | {substrate} | '
                      f'{inliers}/{total} inliers | RMS {rms_text}')
             self.u_selector.addItem(label, (version, path, metadata))
-        form.addRow('Saved orientation:', self.u_selector)
+        if batch:
+            self.u_selector.setEnabled(False)
+        form.addRow('Orientation (scan 1):' if batch else 'Saved orientation:',
+                    self.u_selector)
 
         self.matrix_type = QtWidgets.QComboBox()
         self.matrix_type.addItem(
@@ -698,6 +713,26 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.auto_index_button = QtWidgets.QPushButton('Auto-index missing')
         self.auto_index_button.clicked.connect(self.auto_index_missing)
         bar.addWidget(self.auto_index_button)
+        self.batch_convert_button = QtWidgets.QPushButton('Batch Convert')
+        self.batch_convert_button.setToolTip(
+            'Convert every selected, not-yet-converted scan row in turn -- the '
+            'same as clicking Convert on each, but as one queued pass.')
+        self.batch_convert_button.clicked.connect(self.batch_convert)
+        bar.addWidget(self.batch_convert_button)
+        self.batch_reconstruct_button = QtWidgets.QPushButton('Batch U/UB...')
+        self.batch_reconstruct_button.setToolTip(
+            'Run U/UB on every selected scan row in turn: each uses its own '
+            'latest U_S record, with grid/matrix/tag settings chosen once. '
+            'Requires every selected scan to be converted and indexed.')
+        self.batch_reconstruct_button.clicked.connect(self.batch_reconstruct)
+        bar.addWidget(self.batch_reconstruct_button)
+        self.ctr_button = QtWidgets.QPushButton('CTR rods...')
+        self.ctr_button.setToolTip(
+            'Reconstruct high-resolution HKL rods (CTR) for the selected group '
+            'of phi scan rows: average their U, define (h, k) rods and the L '
+            'grid, then run a single multi-rod conversion.')
+        self.ctr_button.clicked.connect(self.ctr_rods)
+        bar.addWidget(self.ctr_button)
         bar.addStretch()
         self.count = QtWidgets.QLabel()
         bar.addWidget(self.count)
@@ -712,6 +747,12 @@ class MonitorWindow(QtWidgets.QMainWindow):
                 column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         self.table.setEditTriggers(
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        # Row multi-select so a group of scans can be picked for CTR rods
+        # (click the Dataset column; the action columns hold buttons).
+        self.table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         layout.addWidget(self.table)
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -786,44 +827,76 @@ class MonitorWindow(QtWidgets.QMainWindow):
 
         self._start_task(work, 'Starting automatic substrate matching ...')
 
-    def convert(self, ds):
-        """Run autoRSM on a single scan now, without the watcher and without
-        waiting for the queue. Streams progress to the bottom bar."""
-        if ds.resolved_output():
-            self.message(f'Scan {ds.scan_number} is already converted.')
-            return
+    def _convert_one(self, ds, status):
+        """Convert a single scan synchronously (config sync + autoRSM), streaming
+        progress through ``status``. Returns a summary string; raises on failure.
+        Runs inside a task's worker thread -- shared by Convert and Batch Convert."""
         changed = workflow.sync_config_paths(
             ds.config_path, poni_file=self.opts['poni_file'],
             mask_file=self.opts['mask_file'],
             output_dir=self.opts['output_dir'], spec_dir=self.opts['spec_dir'],
             max_intensity=self.opts['max_intensity'])
         if changed:
-            self.message(f"Updated {', '.join(changed)} in "
-                         f'{os.path.basename(ds.config_path)} from current config')
+            status(f"Updated {', '.join(changed)} in "
+                   f'{os.path.basename(ds.config_path)} from current config')
         command = autorsm_command(self.opts, ds.config_path)
         command_text = shlex.join(command)
+        status(f'Converting {ds.label} ...')
+        status('RUN: ' + command_text)
+        returncode, output = run_autorsm(
+            command,
+            lambda pct, text: self.conversion_progress.emit(
+                pct, f'scan {ds.scan_number}  {text}'))
+        self.conversion_progress.emit(0, '')
+        if returncode:
+            raise RuntimeError(output[-2000:])
+        saved = [line[6:] for line in output.splitlines()
+                 if line.startswith('Saved ')]
+        note = next((l for l in output.splitlines()
+                     if l.startswith('Total overloaded')), '')
+        if note:
+            status(note)
+        return (f'Converted scan {ds.scan_number}: '
+                f'{saved[-1] if saved else "done"}'
+                + (f' -- {note}' if note else ''))
+
+    def convert(self, ds):
+        """Run autoRSM on a single scan now, without the watcher and without
+        waiting for the queue. Streams progress to the bottom bar."""
+        if ds.resolved_output():
+            self.message(f'Scan {ds.scan_number} is already converted.')
+            return
+        self._start_task(lambda status: self._convert_one(ds, status),
+                         f'Converting {ds.label} ...')
+
+    def batch_convert(self):
+        """Convert every selected, not-yet-converted scan in turn -- the same as
+        clicking Convert on each row, but as one queued pass. A scan that fails
+        is reported and skipped so the rest still run."""
+        datasets = [ds for ds in self.selected_datasets()
+                    if not ds.resolved_output()]
+        if not datasets:
+            self.message('Select one or more unconverted scans to batch convert.')
+            return
+        total = len(datasets)
 
         def work(status):
-            status(f'Converting {ds.label} ...')
-            status('RUN: ' + command_text)
-            returncode, output = run_autorsm(
-                command,
-                lambda pct, text: self.conversion_progress.emit(
-                    pct, f'scan {ds.scan_number}  {text}'))
-            self.conversion_progress.emit(0, '')
-            if returncode:
-                raise RuntimeError(output[-2000:])
-            saved = [line[6:] for line in output.splitlines()
-                     if line.startswith('Saved ')]
-            note = next((l for l in output.splitlines()
-                         if l.startswith('Total overloaded')), '')
-            if note:
-                status(note)
-            return (f'Converted scan {ds.scan_number}: '
-                    f'{saved[-1] if saved else "done"}'
-                    + (f' -- {note}' if note else ''))
+            converted, failed = [], []
+            for index, ds in enumerate(datasets, 1):
+                status(f'[{index}/{total}] {ds.label} ...')
+                try:
+                    status(f'[{index}/{total}] {self._convert_one(ds, status)}')
+                    converted.append(ds.scan_number)
+                except Exception as exc:
+                    failed.append(ds.scan_number)
+                    status(f'Scan {ds.scan_number} failed: '
+                           f'{str(exc).splitlines()[-1]}')
+            summary = f'Batch convert: {len(converted)}/{total} scan(s) converted'
+            if failed:
+                summary += f'; failed: {failed}'
+            return summary
 
-        self._start_task(work, f'Converting {ds.label} ...')
+        self._start_task(work, f'Batch converting {total} scan(s) ...')
 
     def _check_item(self, yes):
         item = QtWidgets.QTableWidgetItem('yes' if yes else '-')
@@ -1019,6 +1092,18 @@ class MonitorWindow(QtWidgets.QMainWindow):
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, 'Invalid selection', str(exc))
             return
+        spec = (matrix_type, custom_grid, ranges, shape, tag, orientation)
+        self._start_task(
+            lambda status: self._reconstruct_one(ds, metadata, spec, status),
+            f'Starting indexed reconstruction for {ds.label}')
+
+    def _reconstruct_one(self, ds, metadata, spec, status):
+        """Write a per-scan reconstruction config for ``metadata`` (a chosen U_S
+        record) and run the existing autoRSM, streaming progress through
+        ``status``. Returns a summary; raises on failure. Shared by Run U/UB and
+        Batch U/UB. ``spec`` = (matrix_type, custom_grid, ranges, shape, tag,
+        orientation)."""
+        matrix_type, custom_grid, ranges, shape, tag, orientation = spec
         run_label = self.opts['run_label']
         recon_dir = os.path.join(self.opts['output_dir'], 'logs',
                                  'reconstructions', run_label)
@@ -1039,29 +1124,158 @@ class MonitorWindow(QtWidgets.QMainWindow):
         processed_list = os.path.join(
             log_dir, f'processed_commands_indexed_{run_label}.txt')
         workflow.append_unique_line(command_list, command_text)
+        status(f'Reconstructing scan {ds.scan_number} as {tag} with '
+               f'the existing autoRSM ({matrix_type}) ...')
+        status('RUN: ' + command_text)
+        returncode, output = run_autorsm(
+            command,
+            lambda pct, text: self.conversion_progress.emit(
+                pct, f'{tag}  {text}'))
+        self.conversion_progress.emit(0, '')
+        if returncode:
+            raise RuntimeError(output[-2000:])
+        workflow.append_unique_line(processed_list, command_text)
+        saved = [line[6:] for line in output.splitlines()
+                 if line.startswith('Saved ')]
+        note = next((l for l in output.splitlines()
+                     if l.startswith('Total overloaded')), '')
+        if note:
+            status(note)
+        return (f'Reconstruction saved: {saved[-1] if saved else tag}'
+                + (f' -- {note}' if note else ''))
+
+    def batch_reconstruct(self):
+        """Run U/UB on every selected scan in one queued pass: each scan uses its
+        own latest U_S record, with the grid/matrix/tag settings chosen once in
+        the dialog applied to all. Refuses if any selected scan is not converted
+        or has no U_S record yet. A scan that fails is reported and skipped."""
+        datasets = self.selected_datasets()
+        if not datasets:
+            self.message('Select one or more scans for batch U/UB.')
+            return
+        not_converted = [ds.label for ds in datasets if not ds.resolved_output()]
+        no_u = [ds.label for ds in datasets if not ds.metadata_records()]
+        if not_converted or no_u:
+            problems = []
+            if not_converted:
+                problems.append('not converted: ' + ', '.join(not_converted))
+            if no_u:
+                problems.append('no U_S record (Find U first): '
+                                + ', '.join(no_u))
+            QtWidgets.QMessageBox.warning(
+                self, 'Batch U/UB not ready',
+                'Every selected scan needs a reconstructed volume and a U_S '
+                'record before a batch run:\n\n' + '\n'.join(problems))
+            return
+        dialog = DimensionsDialog(datasets[0].metadata_records(), self,
+                                  batch=True)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        try:
+            (_metadata, matrix_type, custom_grid, ranges, shape, tag,
+             orientation) = dialog.values()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, 'Invalid selection', str(exc))
+            return
+        spec = (matrix_type, custom_grid, ranges, shape, tag, orientation)
+        total = len(datasets)
 
         def work(status):
-            status(f'Reconstructing scan {ds.scan_number} as {tag} with '
-                   f'the existing autoRSM ({matrix_type}) ...')
+            done, failed = [], []
+            for index, ds in enumerate(datasets, 1):
+                version, path, metadata = ds.metadata_records()[-1]
+                selected = dict(metadata, u_s_record=os.path.abspath(path),
+                                u_s_version=version)
+                status(f'[{index}/{total}] {ds.label} ...')
+                try:
+                    status(f'[{index}/{total}] '
+                           f'{self._reconstruct_one(ds, selected, spec, status)}')
+                    done.append(ds.scan_number)
+                except Exception as exc:
+                    failed.append(ds.scan_number)
+                    status(f'Scan {ds.scan_number} failed: '
+                           f'{str(exc).splitlines()[-1]}')
+            summary = f'Batch U/UB: {len(done)}/{total} scan(s) reconstructed'
+            if failed:
+                summary += f'; failed: {failed}'
+            return summary
+
+        self._start_task(work, f'Batch U/UB for {total} scan(s) ...')
+
+    def selected_datasets(self):
+        """The datasets for the currently selected table rows, in order."""
+        rows = sorted({index.row()
+                       for index in self.table.selectionModel().selectedRows()})
+        return [self.datasets[row] for row in rows if row < len(self.datasets)]
+
+    def ctr_rods(self):
+        """Reconstruct high-resolution HKL rods for the selected phi scans:
+        average their U, define the (h, k) rods and L grid in a dialog, then
+        run autoRSM_rods once over the merged group."""
+        datasets = [ds for ds in self.selected_datasets()
+                    if not ds.is_theta_only]
+        if not datasets:
+            QtWidgets.QMessageBox.information(
+                self, 'Select scans',
+                'Select one or more phi scan rows (click the Dataset column) '
+                'for the rod reconstruction.')
+            return
+        missing = [ds for ds in datasets if not ds.resolved_output()]
+        if missing:
+            QtWidgets.QMessageBox.information(
+                self, 'Convert first',
+                'These selected scans are not converted yet: '
+                + ', '.join(str(ds.scan_number) for ds in missing))
+            return
+        dialog = ctr.CTRDialog(datasets, list(self.lattices), self,
+                               lattice_file=self.opts['lattice_file'],
+                               default_normal=workflow.DEFAULT_NORMAL)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        spec = dialog.values()
+
+        scan_list = sorted({scan for ds in datasets for scan in ds.scans})
+        run_label = self.opts['run_label']
+        recon_dir = os.path.join(self.opts['output_dir'], 'logs',
+                                 'reconstructions', run_label)
+        source = datasets[0].config_path
+        config_name = (os.path.splitext(os.path.basename(source))[0]
+                       + f"_{spec['output_tag']}_rods.txt")
+        config_path = workflow.next_available_path(
+            os.path.join(recon_dir, config_name))
+
+        def work(status):
+            workflow.write_rod_config(
+                source, config_path, spec['metadata'], scan_list, spec['pairs'],
+                spec['h_window'], spec['h_points'], spec['k_window'],
+                spec['k_points'], spec['l_range'], spec['l_points'],
+                spec['output_tag'], max_intensity=self.opts['max_intensity'],
+                orientation=spec['orientation'])
+            command = [self.opts['python'], self.opts['autorsm_rods'],
+                       config_path]
+            command_text = shlex.join(command)
+            status(f"Reconstructing {len(spec['pairs'])} rod(s) from scans "
+                   f"{scan_list} ...")
             status('RUN: ' + command_text)
             returncode, output = run_autorsm(
                 command,
                 lambda pct, text: self.conversion_progress.emit(
-                    pct, f'{tag}  {text}'))
+                    pct, f"{spec['output_tag']}  {text}"))
             self.conversion_progress.emit(0, '')
             if returncode:
                 raise RuntimeError(output[-2000:])
-            workflow.append_unique_line(processed_list, command_text)
             saved = [line[6:] for line in output.splitlines()
                      if line.startswith('Saved ')]
             note = next((l for l in output.splitlines()
                          if l.startswith('Total overloaded')), '')
             if note:
                 status(note)
-            return (f'Reconstruction saved: {saved[-1] if saved else tag}'
+            return (f"Rod reconstruction saved: "
+                    f"{saved[-1] if saved else spec['output_tag']}"
                     + (f' -- {note}' if note else ''))
 
-        self._start_task(work, f'Starting indexed reconstruction for {ds.label}')
+        self._start_task(
+            work, f'Starting CTR rod reconstruction for scans {scan_list}')
 
     def toggle_watcher(self, checked):
         if checked:
@@ -1132,6 +1346,8 @@ def default_opts():
         # wherever the repo is deployed; override with --autorsm if it lives
         # elsewhere on the beamtime server. The python interpreter is separate.
         'autorsm': os.path.join(here, 'HKL_Convert', 'autoRSM.py'),
+        # CTR multi-rod driver, bundled alongside autoRSM in HKL_Convert/.
+        'autorsm_rods': os.path.join(here, 'HKL_Convert', 'autoRSM_rods.py'),
         'lattice_file': os.path.join(here, 'substrate_lattice_constants.txt'),
     }
 
@@ -1162,8 +1378,9 @@ def load_config(path=None):
     # Resolve relative path-like values against the repo directory. A bare
     # command name (no path separator, e.g. "python") is left alone so it is
     # found on PATH -- only things that look like relative paths are joined.
-    for key in ('python', 'autorsm', 'make_log_files', 'lattice_file',
-                'base_dir', 'spec_dir', 'output_dir', 'poni_file', 'mask_file'):
+    for key in ('python', 'autorsm', 'autorsm_rods', 'make_log_files',
+                'lattice_file', 'base_dir', 'spec_dir', 'output_dir',
+                'poni_file', 'mask_file'):
         val = data.get(key)
         if (isinstance(val, str) and val and not os.path.isabs(val)
                 and os.sep in val):
@@ -1184,7 +1401,7 @@ def parse_args(argv=None):
 
     parser = argparse.ArgumentParser(description=__doc__, parents=[pre])
     for key in ('base_dir', 'spec_dir', 'output_dir', 'poni_file', 'mask_file',
-                'python', 'make_log_files', 'autorsm',
+                'python', 'make_log_files', 'autorsm', 'autorsm_rods',
                 'lattice_file'):
         parser.add_argument('--' + key.replace('_', '-'), default=opts[key])
     parser.add_argument('--interval', type=int, default=opts['interval'])

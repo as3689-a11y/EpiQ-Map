@@ -47,6 +47,7 @@ it/s rate is the per-frame throughput.
 | File | Purpose |
 |---|---|
 | `autoRSM.py` | Main script. Reads a config file, loops over scans/frames, accumulates the 3D histogram, writes the NeXus output. |
+| `autoRSM_rods.py` | CTR variant: reconstructs many narrow HKL rods in one pass over the frames (each rod a tight, self-clipping grid), writing one NeXus file with an `NXdata` per rod. Driven by the monitor's **CTR rods…** button. |
 | `hklBen.py` | ctypes wrapper around `libhklBen.so`, plus the goniometer rotation-matrix construction (transposed Busing–Levy convention). |
 | `hklBen.c` | C/OpenMP kernels. `hklhist` is the fused fast path; `hist`, `hist2`, `histarb`, `benhkl`, `calchkl` are kept for older notebooks. |
 | `Makefile` | Builds `libhklBen.so`. |

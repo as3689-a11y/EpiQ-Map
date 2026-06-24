@@ -19,8 +19,9 @@ from typing import Any, Optional
 import numpy as np
 from scipy.ndimage import map_coordinates
 
-from Visualize_RSM_Lib import (compute_U_from_substrate, load_U_matrix,
-                               load_rsm, save_U_matrix, transform_slab)
+from Visualize_RSM_Lib import (ROD_TOKEN, compute_U_from_substrate,
+                               list_rods, load_rsm, load_U_matrix,
+                               save_U_matrix, transform_slab)
 
 # Substrate lattice file lives alongside this script in the EpiQ-Map suite.
 LATTICE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -558,7 +559,7 @@ def _install_command() -> str:
     return "conda install -n viz -c conda-forge napari pyqt pyqtgraph"
 
 
-def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> tuple[Any, Any, Any]:
+def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> tuple[Any, Any, Any, Any]:
     """Build Qt docks lazily so numerical helpers work without napari/Qt."""
     from napari.qt.threading import thread_worker
     from qtpy.QtCore import Qt
@@ -1173,8 +1174,192 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
                 self.status.setText(f"Error: {exc}")
                 QMessageBox.critical(self, "EpiQ-Map image", str(exc))
 
+    class RodDock(QWidget):
+        """Open a multi-rod CTR file (autoRSM_rods), switch the active rod, and
+        overlay rod L-profiles. Selecting a rod feeds it to the region/image/
+        line-cut docks (as ``file.nxs::rod_h_k``), so they work on one rod."""
+
+        _palette = ("#ff9d00", "#1f9ee0", "#43c25a", "#e0473f", "#b56cff",
+                    "#f0c419", "#ff7eb6", "#22b3a4", "#9b8d5a", "#7a8cff")
+
+        def __init__(self, region_dock) -> None:
+            super().__init__()
+            self.region_dock = region_dock
+            self.rod_file = ""
+            self._last_profile: Optional[tuple] = None
+            layout = QVBoxLayout(self)
+            top = QHBoxLayout()
+            open_button = QPushButton("Open rod file...")
+            open_button.clicked.connect(self.open_file)
+            self.rod_combo = QComboBox()
+            top.addWidget(open_button)
+            top.addWidget(self.rod_combo, 1)
+            layout.addLayout(top)
+
+            actions = QHBoxLayout()
+            show = QPushButton("Show rod in viewer")
+            show.setToolTip("Make the chosen rod the active volume for the "
+                            "RSM region / image / line-cut docks.")
+            show.clicked.connect(self.show_rod)
+            self.reduce = QComboBox(); self.reduce.addItems(["sum", "mean"])
+            plot = QPushButton("Plot rod profile")
+            plot.clicked.connect(self.plot_rod)
+            plot_all = QPushButton("Plot all")
+            plot_all.clicked.connect(self.plot_all)
+            box = QPushButton("Integration box...")
+            box.setToolTip("Open the chosen rod with a draggable integration "
+                           "box (red) and background box (magenta) for a "
+                           "background-subtracted L profile.")
+            box.clicked.connect(self.open_box_viewer)
+            actions.addWidget(show)
+            actions.addWidget(QLabel("L profile")); actions.addWidget(self.reduce)
+            actions.addWidget(plot); actions.addWidget(plot_all)
+            actions.addWidget(box)
+            layout.addLayout(actions)
+            self._box_viewer = None
+
+            opts = QHBoxLayout()
+            self.log_y = QCheckBox("Log Y"); self.log_y.setChecked(True)
+            self.log_y.toggled.connect(lambda value: self.plot.setLogMode(y=value))
+            save = QPushButton("Save CSV"); save.clicked.connect(self.save)
+            opts.addWidget(self.log_y); opts.addStretch(); opts.addWidget(save)
+            layout.addLayout(opts)
+
+            split = QHBoxLayout()
+            self.plot = pg.PlotWidget()
+            self.plot.setLabel("left", "Intensity")
+            self.plot.setLabel("bottom", "L", units="rlu")
+            self.plot.showGrid(x=True, y=True, alpha=.25)
+            self.plot.addLegend(); self.plot.setLogMode(y=True)
+            split.addWidget(self.plot, 1)
+            side = QVBoxLayout(); side.addWidget(QLabel("Rod profiles"))
+            self.curve_list = QListWidget()
+            self.curve_list.itemChanged.connect(self._toggle_curve)
+            side.addWidget(self.curve_list)
+            clear = QPushButton("Clear all"); clear.clicked.connect(self.clear_curves)
+            side.addWidget(clear)
+            split.addLayout(side); layout.addLayout(split)
+            self.curves: list[Any] = []
+            self._color_index = 0
+            self.status = QLabel("Open a rod (.nxs) file.")
+            self.status.setWordWrap(True); layout.addWidget(self.status)
+
+        def open_file(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Open rod CTR file", monitor_output_dir(),
+                "NeXus (*.nxs)")
+            if not path:
+                return
+            try:
+                rods = list_rods(path)
+            except Exception as exc:
+                QMessageBox.critical(self, "Rod file", str(exc)); return
+            if not rods:
+                self.status.setText(
+                    "No rods (entry/rod_* groups) in this file -- it is not a "
+                    "multi-rod CTR file."); return
+            self.rod_file = path
+            self.rod_combo.clear()
+            for h0, k0, group in rods:
+                self.rod_combo.addItem(f"({h0}, {k0})", (path, group))
+            self.status.setText(
+                f"{len(rods)} rod(s) in {os.path.basename(path)}")
+
+        def _current(self) -> tuple:
+            data = self.rod_combo.currentData()
+            if not data:
+                raise ValueError("open a rod file and choose a rod")
+            return data                         # (path, group)
+
+        def show_rod(self) -> None:
+            try:
+                path, group = self._current()
+            except ValueError as exc:
+                self.status.setText(str(exc)); return
+            token = f"{path}{ROD_TOKEN}{group}"
+            # Hand the rod to the region dock as the active source and display
+            # it on its native grid -- region/image/line cuts then act on it.
+            self.region_dock._source_paths = [token]
+            self.region_dock.source.setText(token)
+            self.region_dock.display_as_is()
+            self.status.setText(f"Showing rod {self.rod_combo.currentText()}")
+
+        def open_box_viewer(self) -> None:
+            try:
+                path, group = self._current()
+            except ValueError as exc:
+                self.status.setText(str(exc)); return
+            try:
+                import rsm_viewer_CTR as ctr
+                data, H, K, L = load_rsm(f"{path}{ROD_TOKEN}{group}")
+            except Exception as exc:
+                QMessageBox.critical(self, "Integration box", str(exc)); return
+            self._box_viewer = ctr.RodBoxViewer(
+                data, H, K, L, self.rod_combo.currentText(), self)
+            self._box_viewer.destroyed.connect(
+                lambda: setattr(self, "_box_viewer", None))
+            self._box_viewer.show(); self._box_viewer.raise_()
+
+        def _profile(self, path: str, group: str) -> tuple:
+            _data, _H, _K, L = load_rsm(f"{path}{ROD_TOKEN}{group}")
+            reduce = np.nansum if self.reduce.currentText() == "sum" else np.nanmean
+            return L, np.asarray(reduce(_data, axis=(0, 1)))
+
+        def plot_rod(self) -> None:
+            try:
+                path, group = self._current()
+                x, y = self._profile(path, group)
+                self.display(x, y, self.rod_combo.currentText())
+            except Exception as exc:
+                QMessageBox.critical(self, "Rod profile", str(exc))
+
+        def plot_all(self) -> None:
+            try:
+                for index in range(self.rod_combo.count()):
+                    path, group = self.rod_combo.itemData(index)
+                    x, y = self._profile(path, group)
+                    self.display(x, y, self.rod_combo.itemText(index))
+            except Exception as exc:
+                QMessageBox.critical(self, "Rod profile", str(exc))
+
+        def display(self, x: np.ndarray, y: np.ndarray, label: str) -> None:
+            self._last_profile = (x, y, label)
+            color = self._palette[self._color_index % len(self._palette)]
+            self._color_index += 1
+            curve = self.plot.plot(x, y, pen=pg.mkPen(color, width=2),
+                                   name=label)
+            item = QListWidgetItem(label)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            item.setForeground(pg.mkColor(color))
+            self.curve_list.addItem(item)
+            self.curves.append((item, curve))
+
+        def _toggle_curve(self, item: Any) -> None:
+            for it, curve in self.curves:
+                if it is item:
+                    curve.setVisible(item.checkState() == Qt.Checked)
+                    break
+
+        def clear_curves(self) -> None:
+            for _item, curve in self.curves:
+                self.plot.removeItem(curve)
+            self.curves.clear(); self.curve_list.clear()
+            self._color_index = 0; self._last_profile = None
+
+        def save(self) -> None:
+            if self._last_profile is None:
+                return
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save rod profile", "rod_profile.csv", "CSV (*.csv)")
+            if path:
+                if not path.endswith(".csv"):
+                    path += ".csv"
+                save_csv(path, self._last_profile[0], self._last_profile[1], "L")
+
     region_dock = RegionDock()
-    return region_dock, LineCutDock(), ImageDock(region_dock)
+    return (region_dock, LineCutDock(), ImageDock(region_dock),
+            RodDock(region_dock))
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -1203,17 +1388,18 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.u_matrix:
         try: controller.set_u(load_U_matrix(args.u_matrix))
         except Exception as exc: print(f"Could not load U matrix: {exc}", file=sys.stderr)
-    region_dock, line_dock, image_dock = build_gui(controller, args)
-    # Stack the three tall panels as tabs in one dock area rather than three
-    # stacked panels; show the RSM region tab first.
+    region_dock, line_dock, image_dock, rod_dock = build_gui(controller, args)
+    # Stack the tall panels as tabs in one dock area rather than stacked
+    # panels; show the RSM region tab first.
     region_handle = viewer.window.add_dock_widget(region_dock, name="RSM region", area="right")
     line_handle = viewer.window.add_dock_widget(line_dock, name="Line cuts", area="right", tabify=True)
     image_handle = viewer.window.add_dock_widget(image_dock, name="RSM image", area="right", tabify=True)
+    rod_handle = viewer.window.add_dock_widget(rod_dock, name="RSM rods", area="right", tabify=True)
     region_handle.raise_()
     # Keep handles so a closed dock can be re-shown. napari also lists them
     # under the Window menu; region_dock gets a button as a guaranteed path.
     controller.dock_handles = {"region": region_handle, "line": line_handle,
-                               "image": image_handle}
+                               "image": image_handle, "rod": rod_handle}
     if hasattr(region_dock, "set_dock_handles"):
         region_dock.set_dock_handles(controller.dock_handles)
     controller.install_canvas_callbacks()

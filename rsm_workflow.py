@@ -374,3 +374,136 @@ def write_reconstruction_config(source_config, destination, metadata, ranges,
     with open(destination, 'x') as fh:
         fh.write('\n'.join(kept + values) + '\n')
     return destination
+
+
+# ----------------------------------------------------------------------
+# CTR rods: average several scans' U, write a multi-rod reconstruction config
+# ----------------------------------------------------------------------
+
+def average_U(records):
+    """Average several substrate-index records into one orientation.
+
+    Each record is a saved U_S metadata dict (``build_index_metadata`` output)
+    carrying ``orientation_U`` (a proper rotation, q ~= U @ B* @ hkl),
+    ``Bstar``, ``lattice``, and ``substrate``. The orientation matrices are
+    averaged elementwise and snapped back to the nearest exact rotation via
+    polar decomposition (``rl.orthonormalize``) -- the standard way to mean
+    rotations that are already close. All records must share a substrate, so a
+    common B* is well defined; ``UB = U_avg @ B*`` maps hkl (r.l.u.) to
+    measured q for the rod reconstruction. Returns an averaged metadata dict in
+    the ``build_index_metadata`` shape that ``write_rod_config`` consumes.
+    """
+    records = list(records)
+    if not records:
+        raise ValueError("no U_S records to average")
+    substrates = {r.get('substrate') for r in records}
+    if len(substrates) > 1:
+        raise ValueError("cannot average U across different substrates: "
+                         f"{sorted(str(s) for s in substrates)}")
+    Us = [np.asarray(r['orientation_U'], dtype=float) for r in records]
+    if any(U.shape != (3, 3) or not np.all(np.isfinite(U)) for U in Us):
+        raise ValueError("each record needs a finite 3x3 orientation_U")
+    U_avg = rl.orthonormalize(np.mean(Us, axis=0))
+    Bstar = np.asarray(records[0]['Bstar'], dtype=float)
+    UB = U_avg @ Bstar
+    base = records[0]
+    return {
+        'schema_version': 1,
+        'created_utc': datetime.now(timezone.utc).isoformat(),
+        'method': 'averaged',
+        'substrate': base.get('substrate'),
+        'lattice': list(map(float, base['lattice'])),
+        'normal': base.get('normal'),
+        'orientation_U': U_avg.tolist(),
+        'Bstar': Bstar.tolist(),
+        'UB': UB.tolist(),
+        'n_averaged': len(records),
+        'sources': [r.get('source_nxs') for r in records],
+    }
+
+
+def write_rod_config(source_config, destination, metadata, scan_list,
+                     rod_hk_pairs, h_window, h_points, k_window, k_points,
+                     l_range, l_points, output_tag, max_intensity=None,
+                     orientation=None):
+    """Create an ``autoRSM_rods`` config for a multi-rod (CTR) reconstruction.
+
+    Mirrors ``write_reconstruction_config`` but for the rod driver: the source
+    log's per-scan grid/scan keys are stripped and replaced so the whole group
+    of phi scans (``scan_list``) is merged in one pass. ``metadata['UB']``
+    (= U_avg @ B*) is the transfer matrix, so the rod centers in ``rod_hk_pairs``
+    are in r.l.u. (h, k). Each rod is a tight grid
+    ``h0 + linspace(*h_window, h_points)`` x ``k0 + linspace(*k_window, k_points)``
+    x ``linspace(*l_range, l_points)``.
+
+    ``orientation``, if given, is a ``(Q1, Q2, Q3)`` triple of crystal
+    directions; the transfer matrix is re-oriented (``UB @ orientation_matrix``)
+    so the rod (h, k) and L axes run along those directions -- the rod
+    counterpart of rsm_viewer's oriented Q axes.
+    """
+    remove = {'UB', 'Substrate Lattice Params', 'H Range', 'K Range',
+              'L Range', 'Grid Shape', 'Output Tag', 'U_S Record',
+              'Max Intensity', 'Scan List', 'Scan Number',
+              'Theta Scan List', 'Theta Scan Number', 'L Points',
+              'Rod HK List', 'Rod H Window', 'Rod H Points',
+              'Rod K Window', 'Rod K Points'}
+    kept = []
+    with open(source_config) as fh:
+        for line in fh:
+            if ': ' in line and line.split(': ', 1)[0].strip() in remove:
+                continue
+            kept.append(line.rstrip('\n'))
+
+    UB = np.asarray(metadata['UB'], dtype=float)
+    if orientation is not None:
+        UB = UB @ orientation_matrix(*orientation)
+    pairs = [(int(h), int(k)) for h, k in rod_hk_pairs]
+    if not pairs:
+        raise ValueError("no (h, k) rods selected")
+    h_lo, h_hi = (float(v) for v in h_window)
+    k_lo, k_hi = (float(v) for v in k_window)
+    l_lo, l_hi = (float(v) for v in l_range)
+    if not (h_lo < h_hi and k_lo < k_hi and l_lo < l_hi):
+        raise ValueError("windows and L range must be (minimum, maximum)")
+    if min(int(h_points), int(k_points), int(l_points)) < 2:
+        raise ValueError("rod point counts must be >= 2")
+    scans = [int(s) for s in scan_list]
+    if not scans:
+        raise ValueError("no scans to reconstruct")
+
+    values = [
+        "# Transfer Matrix Type: UB",
+        f"Output Tag: {output_tag}",
+        f"Scan List: {scans}",
+        "Theta Scan List: []",
+        f"UB: {UB.tolist()}",
+        f"Substrate Lattice Params: {tuple(metadata['lattice'])}",
+        f"Rod HK List: {pairs}",
+        f"Rod H Window: {(h_lo, h_hi)}",
+        f"Rod H Points: {int(h_points)}",
+        f"Rod K Window: {(k_lo, k_hi)}",
+        f"Rod K Points: {int(k_points)}",
+        f"L Range: {(l_lo, l_hi)}",
+        f"L Points: {int(l_points)}",
+    ]
+    if max_intensity is not None:
+        values.append(f"Max Intensity: {repr(float(max_intensity))}")
+    os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
+    with open(destination, 'x') as fh:
+        fh.write('\n'.join(kept + values) + '\n')
+    return destination
+
+
+def hkl_pairs(h_range, k_range):
+    """All integer (h, k) pairs in the inclusive H and K ranges.
+
+    ``h_range``/``k_range`` are (min, max) integer bounds. Returns the pairs in
+    row-major order ((h0,k0), (h0,k1), ...), the order the CTR dialog populates
+    its editable rod list with before the user trims it.
+    """
+    h_lo, h_hi = (int(round(v)) for v in h_range)
+    k_lo, k_hi = (int(round(v)) for v in k_range)
+    if h_lo > h_hi or k_lo > k_hi:
+        raise ValueError("range minimum must not exceed maximum")
+    return [(h, k) for h in range(h_lo, h_hi + 1)
+            for k in range(k_lo, k_hi + 1)]
