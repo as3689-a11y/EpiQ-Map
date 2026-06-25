@@ -47,6 +47,23 @@ python -m pip install -e ".[test]"
 The PyPI distribution is named `EpiQ-Map`; its import package is
 `epiq_map` because Python package identifiers cannot contain hyphens.
 
+## Running
+
+    rsm_viewer --file scan.nxs
+    rsm_monitor --config epiq_monitor.toml
+
+Optional viewer flags (all have sensible defaults): `--u-matrix FILE`,
+`--q1-range LO HI`, `--q2-range LO HI`, `--q3-range LO HI`, `--shape N1 N2 N3`,
+`--memory-limit-mb MB`.
+
+The default target installs the comparatively heavy `napari` and `pyqtgraph`
+dependencies. A concrete Qt binding is selected through a separate extra, as
+shown under Installation.
+
+Copy `examples/epiq_monitor.toml` into the working directory and edit the
+beamtime paths. The bundled reconstruction modules are used by default; an
+external script can still be selected with `--autorsm`.
+
 ## Contents
 
 | Path | Purpose |
@@ -127,23 +144,6 @@ region / image / line-cut docks all operate on that one rod (it is loaded as
 integrated rod intensity *I(L)* (sum or mean over the H/K window), accumulating
 as named curves with **Log Y** and **Save CSV** -- the CTR line shapes side by
 side.
-
-## Running
-
-    rsm_viewer --file scan.nxs
-    rsm_monitor --config epiq_monitor.toml
-
-Optional viewer flags (all have sensible defaults): `--u-matrix FILE`,
-`--q1-range LO HI`, `--q2-range LO HI`, `--q3-range LO HI`, `--shape N1 N2 N3`,
-`--memory-limit-mb MB`.
-
-The default target installs the comparatively heavy `napari` and `pyqtgraph`
-dependencies. A concrete Qt binding is selected through a separate extra, as
-shown under Installation.
-
-Copy `examples/epiq_monitor.toml` into the working directory and edit the
-beamtime paths. The bundled reconstruction modules are used by default; an
-external script can still be selected with `--autorsm`.
 
 ## Monitor: CTR rods (high-resolution HKL rods)
 
