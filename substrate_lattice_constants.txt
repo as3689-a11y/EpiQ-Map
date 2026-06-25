@@ -4,22 +4,14 @@
 #   Separators may be whitespace, commas, or '=' (see load_lattice docstring).
 #   '#' starts a comment.
 
-# LaAlO3: rhombohedral (R-3c) at RT, indexed here in its pseudocubic
-# perovskite setting. a_pc ~ 3.79 A; the rhombohedral angle deviates from
-# 90 deg by only ~0.1 deg, negligible for RSM indexing.
-LaAlO3   3.79  3.79  3.79  90  90  90
-
-# Common perovskite substrates (pseudocubic), for convenience
-SrTiO3   3.905 3.905 3.905 90  90  90
-LSAT     3.868 3.868 3.868 90  90  90
-NdGaO3    5.4280   5.4980   7.7080   90.00   90.00   90.00
-NdGaO3_pc   3.864 3.864 3.864 90  90  90
-DyScO3   3.944 3.944 3.944 90  90  90
-TbScO3   3.960 3.960 3.960 90  90  90
+LaAlO3   3.790 3.790 3.790 90 90 90 #Pseudocubic
+SrTiO3   3.905 3.905 3.905 90 90 90
+LSAT     3.868 3.868 3.868 90 90 90 
+NdGaO3   3.864 3.864 3.864 90 90 90 #Pseudocubic
+DyScO3   3.944 3.944 3.944 90 90 90
+TbScO3   3.960 3.960 3.960 90 90 90
 SrTa2S5  3.306 3.306 24.276 90 90 120
 Al2O3    4.759 4.759 12.991 90 90 120
-MgO       4.2120   4.2120   4.2120   90.00   90.00   90.00
-
-# TiO2 is polymorphic; this unqualified entry uses room-temperature rutile
-# (tetragonal P42/mnm). Use a separately named entry for anatase or brookite.
-TiO2     4.5936 4.5936 2.9587 90 90 90
+MgO      4.212 4.212 4.212 90 90 90
+MgAl2O4  8.083 8.083 8.083 90 90 90
+TiO2     4.5936 4.5936 2.9587 90 90 90	#Rutile
