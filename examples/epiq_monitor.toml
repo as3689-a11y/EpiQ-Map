@@ -2,10 +2,10 @@
 #
 # Precedence:  built-in defaults  <  this file  <  command-line flags
 # So you can edit paths here once per beamtime, and still override any single
-# value at launch, e.g.  python rsm_monitor.py --interval 30
+# value at launch, e.g.  rsm_monitor --interval 30
 #
 # Point the monitor at a different config with:  --config /path/to/file.toml
-# Relative paths (e.g. autorsm, lattice_file) resolve from the repo directory.
+# Relative paths resolve from the directory containing this configuration file.
 
 # --- Beamtime data locations (edit these each beamtime) ---
 base_dir   = "/nfs/chess/id4b/2023-3/gregory-3864-a/raw6M/"
@@ -20,8 +20,9 @@ mask_file  = "/nfs/chess/id4baux/2023-3/gregory-3864-a/calibrations/mask.edf"
 # (fabio/pyFAI/spec2nexus) autoRSM needs, so conversions fail at import. Pin a
 # full path to an interpreter that has the stack.
 python  = "/nfs/chess/sw/miniconda_tfuchs/bin/python"
-# autoRSM script; bundled in the repo by default.
-autorsm = "HKL_Convert/autoRSM.py"
+# The packaged autoRSM module is used by default. Uncomment only to select an
+# external legacy script:
+# autorsm = "/path/to/autoRSM.py"
 
 # --- Behaviour ---
 interval = 60                              # seconds between scans for new data

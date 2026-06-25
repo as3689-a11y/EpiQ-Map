@@ -34,7 +34,7 @@ import tqdm
 from nexusformat.nexus import NXdata, NXfield, nxsetmemory
 from spec2nexus.spec import SpecDataFile
 
-import hklBen
+from . import hkl_ben
 
 nxsetmemory(8000)
 
@@ -246,8 +246,8 @@ def transform_scan(scan_num, image_dir, geom, cfg, H, K, L, UB, data, norm):
             overloaded += 1
             continue
         counts = make_counts(img, mask_bool, inv_solidangle, icnorm[i])
-        M = hklBen.rotation_matrix(eta, chi, phi[i], UB)
-        hklBen.HKLHIST(q, M, counts, H, K, L, data, norm)
+        M = hkl_ben.rotation_matrix(eta, chi, phi[i], UB)
+        hkl_ben.HKLHIST(q, M, counts, H, K, L, data, norm)
     if overloaded:
         print(f"scan {scan_num}: skipped {overloaded} overloaded frame(s) "
               f"(peak > {max_intensity:g})")
@@ -292,8 +292,8 @@ def theta_scan(scan_num, image_dir, geom, cfg, H, K, L, UB, data, norm):
             overloaded += 1
             continue
         counts = make_counts(img, mask_bool, inv_solidangle, icnorm[i])
-        M = hklBen.rotation_matrix(eta[i], chi, phi, UB)
-        hklBen.HKLHIST(q, M, counts, H, K, L, data, norm)
+        M = hkl_ben.rotation_matrix(eta[i], chi, phi, UB)
+        hkl_ben.HKLHIST(q, M, counts, H, K, L, data, norm)
     if overloaded:
         print(f"theta scan {scan_num}: skipped {overloaded} overloaded "
               f"frame(s) (peak > {max_intensity:g})")
@@ -331,7 +331,7 @@ def main():
           f"L: [{L[0]:.4f}, {L[-1]:.4f}]  ({len(H)} x {len(K)} x {len(L)} voxels)")
 
     # Frame-independent detector geometry, computed once.
-    q = hklBen.detector_q(poni)
+    q = hkl_ben.detector_q(poni)
     inv_solidangle = (1.0 / poni.solidAngleArray()).astype(np.float32).ravel()
     tth2d = poni.twoThetaArray()
     geom = (q, inv_solidangle, tth2d)

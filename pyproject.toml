@@ -1,0 +1,87 @@
+[project]
+name = "EpiQ-Map"
+dynamic = ["version"]
+description = "Reciprocal-space reconstruction and inspection for epitaxial thin films"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "Ben Gregory" },
+  { name = "Timo Fuchs" },
+  { name = "Andrej Singer" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: MacOS X",
+  "Environment :: Win32 (MS Windows)",
+  "Environment :: X11 Applications :: Qt",
+  "Intended Audience :: Science/Research",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: C",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Scientific/Engineering :: Physics",
+  "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+  "fabio>=0.14",
+  "matplotlib>=3.6",
+  "napari>=0.7",
+  "nexusformat>=1.0",
+  "numpy>=1.23",
+  "pyFAI>=2023.3,!=2025.12.0,!=2025.12.1,!=2026.2.0",
+  "pyqtgraph>=0.13",
+  "QtPy>=2.4",
+  "scikit-learn>=1.2",
+  "scipy>=1.9",
+  "spec2nexus>=2021.2",
+  "tomli>=2; python_version<'3.11'",
+  "tqdm>=4.64",
+]
+
+[project.optional-dependencies]
+qt5 = ["PyQt5>=5.15"]
+qt6 = ["PyQt6>=6.5"]
+pyside2 = ["PySide2>=5.15"]
+pyside6 = ["PySide6>=6.5"]
+vtk = ["PyVTK>=0.5"]
+test = ["pytest>=8", "build>=1.2", "twine>=5"]
+dev = ["EpiQ-Map[test]", "ruff>=0.6"]
+
+[project.scripts]
+rsm_viewer = "epiq_map.rsm_viewer:main"
+rsm_monitor = "epiq_map.rsm_monitor:main"
+
+[project.urls]
+Homepage = "https://github.com/as3689-a11y/EpiQ-Map"
+Source = "https://github.com/as3689-a11y/EpiQ-Map"
+Issues = "https://github.com/as3689-a11y/EpiQ-Map/issues"
+Changelog = "https://github.com/as3689-a11y/EpiQ-Map/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["setuptools>=80", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["epiq_map*"]
+
+[tool.setuptools.package-data]
+"epiq_map.substrates" = ["*.txt"]
+"epiq_map.hkl_convert" = ["*.txt", "*.md"]
+
+[tool.setuptools_scm]
+version_file = "src/epiq_map/_version.py"
+fallback_version = "0.1.0+nogit"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "UP", "NPY"]

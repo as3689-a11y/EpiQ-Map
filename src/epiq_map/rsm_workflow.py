@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-import Visualize_RSM_Lib as rl
+from . import visualize_rsm_lib as rl
 
 
 DEFAULT_DIRECTIONS = {
