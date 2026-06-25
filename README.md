@@ -7,18 +7,74 @@ viewer, a processing monitor, and the shared scientific library.
 
 Created by **Ben Gregory** and **Andrej Singer**.
 
+## Installation
+
+Install a published wheel:
+
+```bash
+python -m pip install EpiQ-Map
+```
+
+The default install includes the napari viewer and pyqtgraph, alongside the
+scientific library, reconstruction stack, monitor, and native kernel. Select a
+concrete Qt binding through an extra:
+
+```bash
+# Recommended Qt 6 installation
+python -m pip install "EpiQ-Map[qt6]"
+
+# Optional Qt 5 target
+python -m pip install "EpiQ-Map[qt5]"
+
+# Qt 6, Qt for Python
+python -m pip install "EpiQ-Map[pyside6]"
+
+# Qt 5, Qt for Python (PySide2, not PySide5)
+python -m pip install "EpiQ-Map[pyside2]"
+```
+
+QtPy selects the installed binding. When several bindings are installed, set
+`QT_API` to `pyqt5`, `pyqt6`, `pyside2`, or `pyside6` before launching.
+Current napari supports PyQt5, PyQt6, and PySide6. PySide2 remains usable by
+the monitor, but current napari no longer supports it.
+
+Install a development checkout:
+
+```bash
+python -m pip install -e ".[test]"
+```
+
+The PyPI distribution is named `EpiQ-Map`; its import package is
+`epiq_map` because Python package identifiers cannot contain hyphens.
+
+## Running
+
+    rsm_viewer --file scan.nxs
+    rsm_monitor --config epiq_monitor.toml
+
+Optional viewer flags (all have sensible defaults): `--u-matrix FILE`,
+`--q1-range LO HI`, `--q2-range LO HI`, `--q3-range LO HI`, `--shape N1 N2 N3`,
+`--memory-limit-mb MB`.
+
+The default target installs the comparatively heavy `napari` and `pyqtgraph`
+dependencies. A concrete Qt binding is selected through a separate extra, as
+shown under Installation.
+
+Copy `examples/epiq_monitor.toml` into the working directory and edit the
+beamtime paths. The bundled reconstruction modules are used by default; an
+external script can still be selected with `--autorsm`.
+
 ## Contents
 
-| File                            | Purpose                                                        |
-|---------------------------------|----------------------------------------------------------------|
-| `rsm_viewer.py`                 | EpiQ-Map napari viewer: load a volume, set/compute/save U, orient the Q1/Q2/Q3 axes, interpolate a bounded region, take overlaid line cuts. |
-| `rsm_monitor.py`                | Qt monitor: watch an output directory, index against substrates, run reconstructions. |
-| `rsm_viewer_CTR.py`             | Monitor extension: define and launch high-resolution HKL-rod (CTR) reconstructions for a group of phi scans. |
-| `rsm_workflow.py`               | Scientific + persistence helpers used by the monitor.          |
-| `Visualize_RSM_Lib.py`          | Shared library: loading, U-matrix indexing, slab transforms.   |
-| `substrate_lattice_constants.txt` | Substrate cells (LaAlO3, SrTiO3, LSAT, ...) for U calculation. |
-| `make_log_files.py`, `rsm_output_status.py` | Monitor support scripts.                       |
-| `HKL_Convert/`                  | Acquisition stack (autoRSM + C kernel); populated separately.  |
+| Path | Purpose |
+|---|---|
+| `src/epiq_map/rsm_viewer.py` | EpiQ-Map napari viewer. |
+| `src/epiq_map/rsm_monitor.py` | Qt processing monitor. |
+| `src/epiq_map/rsm_viewer_ctr.py` | High-resolution HKL-rod front end. |
+| `src/epiq_map/visualize_rsm_lib.py` | Shared scientific library. |
+| `src/epiq_map/hkl_convert/` | autoRSM acquisition stack and native C kernel. |
+| `tests/unit/` | Dependency-light unit tests. |
+| `tests/integration/` | Native-kernel and acquisition-stack tests. |
 
 ## Viewer: the U matrix
 
@@ -89,24 +145,6 @@ integrated rod intensity *I(L)* (sum or mean over the H/K window), accumulating
 as named curves with **Log Y** and **Save CSV** -- the CTR line shapes side by
 side.
 
-## Running
-
-    conda activate viz
-    python rsm_viewer.py --file scan.nxs
-    python rsm_monitor.py
-
-Optional viewer flags (all have sensible defaults): `--u-matrix FILE`,
-`--q1-range LO HI`, `--q2-range LO HI`, `--q3-range LO HI`, `--shape N1 N2 N3`,
-`--memory-limit-mb MB`.
-
-GUI dependencies: `napari`, `pyqt`, `pyqtgraph`. Install into the `viz` env
-with:
-
-    conda install -n viz -c conda-forge napari pyqt pyqtgraph
-
-The monitor's reconstruction calls the production `autoRSM.py` via a configured
-path; see `HKL_Convert/README.md`.
-
 ## Monitor: CTR rods (high-resolution HKL rods)
 
 For crystal-truncation-rod work the monitor can reconstruct a small,
@@ -138,12 +176,29 @@ The output is one NeXus file under `{Output Directory}/rod_objects/` with **one
 
 ## Tests
 
-    conda run -n viz python -m unittest test_rsm_viewer test_rsm_viewer_CTR
+    python -m pytest tests/unit
 
-`test_rsm_viewer.py` covers the GUI-independent viewer helpers (cuts,
+`tests/unit/test_rsm_viewer.py` covers the GUI-independent viewer helpers (cuts,
 interpolation, U-from-normal, equal-axes scaling, file naming).
-`test_rsm_viewer_CTR.py` covers the CTR-rod helpers (pair population, U
+`tests/unit/test_rsm_viewer_ctr.py` covers the CTR-rod helpers (pair population, U
 averaging, rod-config round trip; the rod-grid/kernel tests need the
-`HKL_Convert/` acquisition stack and skip without it). The acquisition tests in
-`test_wrapper3.py` (pytest) are skipped until the `HKL_Convert/` stack is in
-place.
+the acquisition stack and native kernel). Integration tests live under
+`tests/integration/`.
+
+## Build and release
+
+The native `hklBen` library is built by setuptools as part of the wheel:
+
+```bash
+python -m pip install --upgrade build twine
+python -m build
+python -m twine check dist/*
+```
+
+No Makefile or hand-copied shared library is needed. Linux wheels use OpenMP,
+Windows wheels use MSVC OpenMP, and macOS wheels use a portable serial fallback.
+Tagging a release as `vX.Y.Z` runs `.github/workflows/release.yml`, builds
+CPython wheels for common Linux, Windows, Intel macOS, and Apple Silicon
+targets, creates a GitHub release, and publishes to PyPI using trusted
+publishing. Add a matching `## [X.Y.Z]` section to `CHANGELOG.md` before
+creating the tag.

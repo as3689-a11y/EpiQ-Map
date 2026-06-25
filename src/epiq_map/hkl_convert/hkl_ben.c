@@ -15,17 +15,25 @@
  *   benhkl   -- q -> HKL rotation only (legacy).
  *   calchkl  -- HKL from polar/azimuthal detector angles (legacy).
  *
- * Build:  make            (gcc -O3 -march=native -fopenmp -shared -fPIC)
+ * Build: handled by the project's PEP 517/setuptools build.
  * Thread count is controlled with the OMP_NUM_THREADS environment variable.
  */
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
-#include <unistd.h>
-#include <sys/time.h>
+#include <stdint.h>
 #include <stdarg.h>
+
+#ifdef _OPENMP
 #include <omp.h>
+#endif
+
+#if defined(_WIN32)
+#define HKLBEN_API __declspec(dllexport)
+#else
+#define HKLBEN_API
+#endif
 
 /* ---------------- small linear-algebra helpers ---------------- */
 
@@ -36,35 +44,34 @@ void   MatrixMultf (double A[3][3], double B[3][3], double C[3][3]);
 void   MVMult3f    (double *vin, double B[3][3], double *vout);
 double determ3f    (double A[3][3]);
 void   inverse3f   (double A[3][3], double invA[3][3]);
-double getclock    (void);
 
 /* ---------------- public API ---------------- */
 
-void hklhist(double *q, double *M, float *counts,
+HKLBEN_API void hklhist(double *q, double *M, float *counts,
              double *Hbin, double *Kbin, double *Lbin,
              float *vol, float *norm,
              int N, int hn, int kn, int ln, float mon);
 
-void calchkl(double *P, double *A, double eta, double mu, double chi,
+HKLBEN_API void calchkl(double *P, double *A, double eta, double mu, double chi,
              double phi, double WL, double *U,
              double *HR, double *KR, double *LR, int N);
 
-void benhkl(double *qmag, double *tth, double *gam,
+HKLBEN_API void benhkl(double *qmag, double *tth, double *gam,
             double *thetaMat, double *chiMat, double *phiMat,
             double WL, double *UB_inv_T,
             double *HR, double *KR, double *LR, int N);
 
-void hist(double *Hbin, double *Kbin, double *Lbin,
+HKLBEN_API void hist(double *Hbin, double *Kbin, double *Lbin,
           double *HR, double *KR, double *LR,
           float *counts, float *vol, float *norm, float *errors,
           int N, int hn, int kn, int ln, float mon);
 
-void hist2(double *Hbin, double *Kbin, double *Lbin,
+HKLBEN_API void hist2(double *Hbin, double *Kbin, double *Lbin,
            double *HR, double *KR, double *LR,
            float *counts, float *vol, float *norm, float *errors,
            int N, int hn, int kn, int ln, float mon);
 
-void histarb(double *Q1bin, double *Q2bin, float *phat,
+HKLBEN_API void histarb(double *Q1bin, double *Q2bin, float *phat,
              double *HR, double *KR, double *LR,
              float *vec1, float *vec2, float prangemin, float prangemax,
              float *counts, float *vol, float *norm,
@@ -100,7 +107,7 @@ static inline int bin_index(const double *bin, int len, double x)
  *   norm    : accumulated hit count, length hn*kn*ln.
  *   mon     : monitor normalization (counts divided by this).
  * --------------------------------------------------------------- */
-void hklhist(double *q, double *M, float *counts,
+HKLBEN_API void hklhist(double *q, double *M, float *counts,
              double *Hbin, double *Kbin, double *Lbin,
              float *vol, float *norm,
              int N, int hn, int kn, int ln, float mon)
@@ -109,8 +116,8 @@ void hklhist(double *q, double *M, float *counts,
     const double m10 = M[3], m11 = M[4], m12 = M[5];
     const double m20 = M[6], m21 = M[7], m22 = M[8];
     const double *qx = q;
-    const double *qy = q + (long)N;
-    const double *qz = q + 2L * (long)N;
+    const double *qy = q + (size_t)N;
+    const double *qz = q + 2 * (size_t)N;
     const double hlo = Hbin[0], hhi = Hbin[hn - 1];
     const double klo = Kbin[0], khi = Kbin[kn - 1];
     const double llo = Lbin[0], lhi = Lbin[ln - 1];
@@ -133,7 +140,8 @@ void hklhist(double *q, double *M, float *counts,
         const int kin = bin_index(Kbin, kn, k);
         const int lin = bin_index(Lbin, ln, l);
 
-        const long index = (long)hin * kn * ln + (long)kin * ln + lin;
+        const int64_t index =
+            (int64_t)hin * kn * ln + (int64_t)kin * ln + lin;
 
         #pragma omp atomic
         vol[index] += counts[n] / mon;
@@ -148,7 +156,7 @@ void hklhist(double *q, double *M, float *counts,
  *  the errors array is still accepted for API compatibility.)
  * --------------------------------------------------------------- */
 
-void histarb(double *Q1bin, double *Q2bin, float *phat,
+HKLBEN_API void histarb(double *Q1bin, double *Q2bin, float *phat,
              double *HR, double *KR, double *LR,
              float *vec1, float *vec2, float prangemin, float prangemax,
              float *counts, float *vol, float *norm,
@@ -185,14 +193,14 @@ void histarb(double *Q1bin, double *Q2bin, float *phat,
     }
 }
 
-void hist(double *Hbin, double *Kbin, double *Lbin,
+HKLBEN_API void hist(double *Hbin, double *Kbin, double *Lbin,
           double *HR, double *KR, double *LR,
           float *counts, float *vol, float *norm, float *errors,
           int N, int hn, int kn, int ln, float mon)
 {
     (void)errors;
     int i, hin, kin, lin, n, flag, flag2;
-    long index;
+    int64_t index;
 
     #pragma omp parallel for private(n, i, flag, flag2, hin, kin, lin, index)
     for (n = 0; n < N; n++) {
@@ -222,7 +230,7 @@ void hist(double *Hbin, double *Kbin, double *Lbin,
             } else flag2 = 1;
 
             if (flag2 == 0) {
-                index = (long)hin * kn * ln + (long)kin * ln + lin;
+                index = (int64_t)hin * kn * ln + (int64_t)kin * ln + lin;
                 #pragma omp atomic
                 vol[index] += counts[n] / mon;
                 #pragma omp atomic
@@ -232,14 +240,14 @@ void hist(double *Hbin, double *Kbin, double *Lbin,
     }
 }
 
-void hist2(double *Hbin, double *Kbin, double *Lbin,
+HKLBEN_API void hist2(double *Hbin, double *Kbin, double *Lbin,
            double *HR, double *KR, double *LR,
            float *counts, float *vol, float *norm, float *errors,
            int N, int hn, int kn, int ln, float mon)
 {
     (void)errors;
     int hin, kin, lin, n, flag2;
-    long index;
+    int64_t index;
 
     #pragma omp parallel for private(n, flag2, hin, kin, lin, index)
     for (n = 0; n < N; n++) {
@@ -260,7 +268,7 @@ void hist2(double *Hbin, double *Kbin, double *Lbin,
             else flag2 = 1;
 
             if (flag2 == 0) {
-                index = (long)hin * kn * ln + (long)kin * ln + lin;
+                index = (int64_t)hin * kn * ln + (int64_t)kin * ln + lin;
                 #pragma omp atomic
                 vol[index] += counts[n] / mon;
                 #pragma omp atomic
@@ -270,7 +278,7 @@ void hist2(double *Hbin, double *Kbin, double *Lbin,
     }
 }
 
-void benhkl(double *qmag, double *tth, double *gam,
+HKLBEN_API void benhkl(double *qmag, double *tth, double *gam,
             double *thetaMat, double *chiMat, double *phiMat,
             double WL, double *UB_inv_T,
             double *HR, double *KR, double *LR, int N)
@@ -309,7 +317,7 @@ void benhkl(double *qmag, double *tth, double *gam,
     }
 }
 
-void calchkl(double *P, double *A, double eta, double mu, double chi,
+HKLBEN_API void calchkl(double *P, double *A, double eta, double mu, double chi,
              double phi, double WL, double *U,
              double *HR, double *KR, double *LR, int N)
 {
@@ -450,10 +458,3 @@ void inverse3f(double A[3][3], double invA[3][3])
             invA[i][j] = r[i][j] / detA;
 }
 
-double getclock(void)
-{
-    struct timezone tzp;
-    struct timeval tp;
-    gettimeofday(&tp, &tzp);
-    return tp.tv_sec + tp.tv_usec * 1.0e-6;
-}

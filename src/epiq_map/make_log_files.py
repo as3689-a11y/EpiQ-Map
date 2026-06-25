@@ -18,11 +18,11 @@ extract the wrong fields, so check BASE_DIR's structure first (or pass
 
 Usage:
     python3 make_log_files.py \\
-        --base-dir /nfs/chess/id4b/2024-3/singer-4058-b/raw6M \\
-        --spec-dir /nfs/chess/id4b/2024-3/singer-4058-b/ \\
-        --output-dir /nfs/chess/id4baux/2024-3/singer-4058-b/output/ \\
-        --poni-file /nfs/chess/id4baux/2024-3/singer-4058-b/calibrations/CeO2_15keV.poni \\
-        --mask-file /nfs/chess/id4baux/2024-3/singer-4058-b/calibrations/mask.edf
+        --base-dir /path/to/raw-images \\
+        --spec-dir /path/to/spec-files \\
+        --output-dir /path/to/output \\
+        --poni-file /path/to/geometry.poni \\
+        --mask-file /path/to/mask.edf
 
 Run `python3 make_log_files.py --help` for all options.
 """

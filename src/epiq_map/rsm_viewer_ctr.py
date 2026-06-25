@@ -27,13 +27,11 @@ Created by Ben Gregory, Timo Fuchs, and Andrej Singer, Cornell University.
 import traceback
 
 import numpy as np
-# Qt comes through qtpy, not a fixed binding: this module is imported by both the
-# PyQt6 monitor and the napari viewer (which runs PyQt5, the only binding whose
-# OpenGL stack works here). qtpy follows whichever Qt the host process already
-# uses, so the dialogs are never a foreign-binding child of their parent.
+# Qt comes through QtPy so these dialogs use the same PyQt/PySide and Qt 5/6
+# binding already selected by the monitor or napari process.
 from qtpy import QtCore, QtWidgets
 
-import rsm_workflow as workflow
+from . import rsm_workflow as workflow
 
 
 # ----------------------------------------------------------------------
@@ -240,8 +238,8 @@ class PeaksWindow(QtWidgets.QDialog):
     def __init__(self, peaks, on_add_pairs, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Found peaks')
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self.setWindowModality(QtCore.Qt.NonModal)
         self.resize(440, 360)
         self._on_add_pairs = on_add_pairs
         layout = QtWidgets.QVBoxLayout(self)
@@ -249,9 +247,9 @@ class PeaksWindow(QtWidgets.QDialog):
         table = QtWidgets.QTableWidget(len(peaks), len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.setEditTriggers(
-            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            QtWidgets.QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+            QtWidgets.QAbstractItemView.SelectRows)
         for row, peak in enumerate(peaks):
             hkl = peak['hkl']
             cells = [str(peak['scan']),
@@ -261,7 +259,7 @@ class PeaksWindow(QtWidgets.QDialog):
                      '✓' if peak['inlier'] else '✗']
             for col, text in enumerate(cells):
                 item = QtWidgets.QTableWidgetItem(text)
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, hkl)
+                item.setData(QtCore.Qt.UserRole, hkl)
                 table.setItem(row, col, item)
         table.resizeColumnsToContents()
         self.table = table
@@ -277,7 +275,7 @@ class PeaksWindow(QtWidgets.QDialog):
         pairs = []
         for index in self.table.selectionModel().selectedRows():
             hkl = self.table.item(index.row(), 0).data(
-                QtCore.Qt.ItemDataRole.UserRole)
+                QtCore.Qt.UserRole)
             if hkl is not None:
                 pairs.append((int(hkl[0]), int(hkl[1])))
         if pairs:
@@ -290,8 +288,8 @@ class ProjectionWindow(QtWidgets.QDialog):
     def __init__(self, projection, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Projection along substrate normal')
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self.setWindowModality(QtCore.Qt.NonModal)
         self.resize(560, 460)
         layout = QtWidgets.QVBoxLayout(self)
         try:
@@ -328,8 +326,8 @@ class RodBoxViewer(QtWidgets.QDialog):
     def __init__(self, data, H, K, L, title='', parent=None):
         super().__init__(parent)
         self.setWindowTitle(f'Rod integration box{f" - {title}" if title else ""}')
-        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self.setWindowModality(QtCore.Qt.NonModal)
         self.resize(560, 560)
         layout = QtWidgets.QVBoxLayout(self)
         try:
@@ -568,7 +566,7 @@ class CTRDialog(QtWidgets.QDialog):
 
         self.pairs = QtWidgets.QListWidget()
         self.pairs.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+            QtWidgets.QAbstractItemView.ExtendedSelection)
         self.pairs.setFixedHeight(110)
         hk_layout.addWidget(self.pairs)
         remove_row = QtWidgets.QHBoxLayout()
@@ -622,8 +620,8 @@ class CTRDialog(QtWidgets.QDialog):
         layout.addLayout(tag_form)
 
         self.buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok |
-            QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+            QtWidgets.QDialogButtonBox.Ok |
+            QtWidgets.QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self._accept_checked)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
@@ -656,7 +654,7 @@ class CTRDialog(QtWidgets.QDialog):
 
     def _ok(self):
         return self.buttons.button(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok)
+            QtWidgets.QDialogButtonBox.Ok)
 
     # -- Find UB -------------------------------------------------------------
 
@@ -707,7 +705,7 @@ class CTRDialog(QtWidgets.QDialog):
         self._busy = busy
         self.find_button.setEnabled(not busy)
         self.buttons.button(
-            QtWidgets.QDialogButtonBox.StandardButton.Cancel).setEnabled(
+            QtWidgets.QDialogButtonBox.Cancel).setEnabled(
                 not busy)
 
     # -- helper windows ------------------------------------------------------
@@ -738,7 +736,7 @@ class CTRDialog(QtWidgets.QDialog):
             if pair not in existing:
                 existing.add(pair)
                 item = QtWidgets.QListWidgetItem(f'({pair[0]}, {pair[1]})')
-                item.setData(QtCore.Qt.ItemDataRole.UserRole, pair)
+                item.setData(QtCore.Qt.UserRole, pair)
                 self.pairs.addItem(item)
         self._update_count()
 
@@ -753,7 +751,7 @@ class CTRDialog(QtWidgets.QDialog):
         self.pairs.clear()
         for h, k in pairs:
             item = QtWidgets.QListWidgetItem(f'({h}, {k})')
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, (h, k))
+            item.setData(QtCore.Qt.UserRole, (h, k))
             self.pairs.addItem(item)
         self._update_count()
 
@@ -775,7 +773,7 @@ class CTRDialog(QtWidgets.QDialog):
         self.pair_count.setText(f'{self.pairs.count()} rods')
 
     def _current_pairs(self):
-        return [self.pairs.item(row).data(QtCore.Qt.ItemDataRole.UserRole)
+        return [self.pairs.item(row).data(QtCore.Qt.UserRole)
                 for row in range(self.pairs.count())]
 
     # -- accept --------------------------------------------------------------
