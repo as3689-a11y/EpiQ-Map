@@ -21,7 +21,7 @@ The averaged UB and the (cheap) peaks/projection live on the dialog after Find
 UB; the long reconstruction itself is launched by the monitor. The heavy
 indexing runs on a worker thread (``QThreadPool``) so the dialog stays live.
 
-Created by Ben Gregory and Andrej Singer, Cornell University.
+Created by Ben Gregory, Timo Fuchs, and Andrej Singer, Cornell University.
 """
 
 import traceback

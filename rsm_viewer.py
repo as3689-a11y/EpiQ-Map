@@ -3,7 +3,7 @@
 
 Reciprocal-space inspection for epitaxial thin films.
 
-Created by Ben Gregory and Andrej Singer.
+Created by Ben Gregory, Timo Fuchs, and Andrej Singer, Cornell University.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PyQt6 beamtime monitor with substrate indexing and HKL reconstruction.
 
-Created by Ben Gregory and Andrej Singer, Cornell University.
+Created by Ben Gregory, Timo Fuchs, and Andrej Singer, Cornell University.
 """
 
 import argparse
@@ -668,7 +668,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self._build_ui()
         self.conversion_progress.connect(self.update_progress)
         self.refresh()
-        self.message('EpiQ-Map monitor -- created by Ben Gregory and Andrej Singer, Cornell University')
+        self.message('EpiQ-Map monitor -- created by Ben Gregory, Timo Fuchs, and Andrej Singer, Cornell University')
         self.message(f"autoRSM: {opts['python']} {opts['autorsm']}")
         self.message(f"Scanning logs in: {os.path.join(opts['output_dir'], 'logs')}")
         self._check_config()
