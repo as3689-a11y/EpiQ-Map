@@ -1,5 +1,5 @@
 """
-hklBen.py -- ctypes wrapper for libhklBen.so.
+hkl_ben.py -- ctypes wrapper for the platform-native hklBen library.
 
 The library is loaded relative to THIS file, not the working directory,
 so scripts using this module can run from anywhere (this removes the old
@@ -16,9 +16,29 @@ Calc_HKL, ben_HKL) are kept so that existing notebooks continue to work.
 import os
 import numpy as np
 import ctypes as ct
+from importlib.machinery import EXTENSION_SUFFIXES
+from pathlib import Path
 
-_module_dir = os.path.dirname(os.path.abspath(__file__))
-_libhkl = np.ctypeslib.load_library('libhklBen', _module_dir)
+_module_dir = Path(__file__).resolve().parent
+
+
+def _load_kernel():
+    """Load the platform-specific native kernel included in the wheel."""
+    candidates = []
+    for suffix in EXTENSION_SUFFIXES:
+        candidates.extend(_module_dir.glob(f"libhklBen*{suffix}"))
+    candidates.extend(_module_dir.glob("libhklBen*.so"))
+    candidates.extend(_module_dir.glob("libhklBen*.dylib"))
+    candidates.extend(_module_dir.glob("libhklBen*.dll"))
+    if not candidates:
+        raise ImportError(
+            "The hklBen native kernel is missing. Reinstall EpiQ-Map from a "
+            "platform wheel or build it locally with `python -m build`."
+        )
+    return ct.CDLL(str(candidates[0]))
+
+
+_libhkl = _load_kernel()
 
 _d1 = np.ctypeslib.ndpointer(dtype=np.double,  ndim=1, flags='CONTIGUOUS')
 _f1 = np.ctypeslib.ndpointer(dtype=np.float32, ndim=1, flags='CONTIGUOUS')

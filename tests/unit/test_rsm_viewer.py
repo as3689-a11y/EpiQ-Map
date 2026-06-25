@@ -4,13 +4,15 @@ from pathlib import Path
 
 import numpy as np
 
-from rsm_viewer import (RegionModel, RSMViewerController, arbitrary_line_cut,
-                        axis_aligned_cut, intensity_view, load_region,
-                        make_region_axes, project_image, save_image,
-                        save_image_npz, save_region, source_tag,
-                        validate_u_matrix)
-from Visualize_RSM_Lib import (axes_from_normal, reciprocal_matrix,
-                               target_orientation_matrix, transform_slab)
+from epiq_map.rsm_viewer import (
+    RegionModel, RSMViewerController, arbitrary_line_cut, axis_aligned_cut,
+    intensity_view, load_region, make_region_axes, project_image, save_image,
+    save_image_npz, save_region, source_tag, validate_u_matrix,
+)
+from epiq_map.visualize_rsm_lib import (
+    axes_from_normal, reciprocal_matrix, target_orientation_matrix,
+    transform_slab,
+)
 
 
 class RSMViewerHelpersTest(unittest.TestCase):
@@ -121,7 +123,7 @@ class CoAddTest(unittest.TestCase):
     """Multi-scan co-add via load_source (nanmean, identical-grid guard)."""
 
     def setUp(self):
-        import rsm_viewer
+        from epiq_map import rsm_viewer
         self.rv = rsm_viewer
         self.H = np.linspace(-1, 1, 4)
         a = np.full((4, 4, 4), 2.0, np.float32)

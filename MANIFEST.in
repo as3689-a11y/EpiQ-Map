@@ -1,0 +1,5 @@
+include CHANGELOG.md
+prune .claude
+prune .github
+recursive-include src/epiq_map/hkl_convert *.c *.txt *.md
+recursive-include src/epiq_map/substrates *.txt

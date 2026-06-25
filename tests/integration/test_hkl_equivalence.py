@@ -10,7 +10,7 @@ New path:
 """
 import time
 import numpy as np
-import hklBen
+from epiq_map.hkl_convert import hkl_ben
 
 
 def correct_HKL2_old(q, theta, chi, phi, UB):
@@ -63,15 +63,15 @@ norm1 = np.zeros(nvox, dtype=np.float32)
 err1 = np.zeros(nvox, dtype=np.float32)
 t0 = time.perf_counter()
 IN = correct_HKL2_old(q, eta, chi, phi, UB)
-hklBen.HIST2(IN, counts, 1.0, H, K, L, data1, norm1, err1)
+hkl_ben.HIST2(IN, counts, 1.0, H, K, L, data1, norm1, err1)
 t_legacy = time.perf_counter() - t0
 
 # ---- new fused path ----
 data2 = np.zeros(nvox, dtype=np.float32)
 norm2 = np.zeros(nvox, dtype=np.float32)
 t0 = time.perf_counter()
-M = hklBen.rotation_matrix(eta, chi, phi, UB)
-hklBen.HKLHIST(q, M, counts, H, K, L, data2, norm2)
+M = hkl_ben.rotation_matrix(eta, chi, phi, UB)
+hkl_ben.HKLHIST(q, M, counts, H, K, L, data2, norm2)
 t_fused = time.perf_counter() - t0
 
 print(f"norm identical:      {np.array_equal(norm1, norm2)}")
@@ -86,11 +86,11 @@ print(f"speedup:             {t_legacy/t_fused:.1f}x")
 times = []
 for _ in range(5):
     t0 = time.perf_counter()
-    M = hklBen.rotation_matrix(eta, chi, phi, UB)
-    hklBen.HKLHIST(q, M, counts, H, K, L, data2, norm2)
+    M = hkl_ben.rotation_matrix(eta, chi, phi, UB)
+    hkl_ben.HKLHIST(q, M, counts, H, K, L, data2, norm2)
     times.append(time.perf_counter() - t0)
 print(f"fused warm (best):   {min(times)*1e3:7.1f} ms")
 
 # legacy correct_HKL2 wrapper in new hklBen must match the old arithmetic too
-IN_new = hklBen.correct_HKL2(q, eta, chi, phi, UB)
+IN_new = hkl_ben.correct_HKL2(q, eta, chi, phi, UB)
 print(f"correct_HKL2 compat: max diff {np.max(np.abs(IN - IN_new)):.3e}")

@@ -13,19 +13,20 @@ import csv
 import os
 import sys
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 from scipy.ndimage import map_coordinates
 
-from Visualize_RSM_Lib import (ROD_TOKEN, compute_U_from_substrate,
-                               list_rods, load_rsm, load_U_matrix,
-                               save_U_matrix, transform_slab)
+from .visualize_rsm_lib import (ROD_TOKEN, compute_U_from_substrate,
+                                list_rods, load_rsm, load_U_matrix,
+                                save_U_matrix, transform_slab)
 
 # Substrate lattice file lives alongside this script in the EpiQ-Map suite.
-LATTICE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "substrate_lattice_constants.txt")
+LATTICE_FILE = str(files("epiq_map.substrates").joinpath(
+    "substrate_lattice_constants.txt"))
 
 
 AXIS_NAMES = ("H", "K", "L")
@@ -84,12 +85,11 @@ def load_substrate_names(path: str = LATTICE_FILE) -> list[str]:
 
 
 def monitor_output_dir() -> str:
-    """Output directory configured in epiq_monitor.toml (next to this script),
+    """Output directory configured in epiq_monitor.toml in the current directory,
     used as the initial folder when browsing for .nxs files. Returns '' if the
     file or key is missing, so the dialog just opens at its default location.
     """
-    toml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "epiq_monitor.toml")
+    toml_path = os.path.abspath("epiq_monitor.toml")
     try:
         try:
             import tomllib as toml
@@ -556,7 +556,7 @@ class RSMViewerController:
 
 
 def _install_command() -> str:
-    return "conda install -n viz -c conda-forge napari pyqt pyqtgraph"
+    return 'python -m pip install "EpiQ-Map[qt6]"'
 
 
 def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> tuple[Any, Any, Any, Any]:
@@ -1290,7 +1290,7 @@ def build_gui(controller: RSMViewerController, initial: argparse.Namespace) -> t
             except ValueError as exc:
                 self.status.setText(str(exc)); return
             try:
-                import rsm_viewer_CTR as ctr
+                from . import rsm_viewer_ctr as ctr
                 data, H, K, L = load_rsm(f"{path}{ROD_TOKEN}{group}")
             except Exception as exc:
                 QMessageBox.critical(self, "Integration box", str(exc)); return

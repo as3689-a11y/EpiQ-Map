@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+src/epiq_map/_version.py
 .eggs/
 build/
 dist/

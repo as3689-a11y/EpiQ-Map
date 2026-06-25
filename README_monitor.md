@@ -7,16 +7,17 @@ can rerun a scan directly into a user-selected indexed HKL volume.
 
 ## Run
 
-Use the `viz` environment (or another environment with the packages below):
+After installing EpiQ-Map:
 
 ```bash
 export OMP_NUM_THREADS=12
-/home/as3689/miniconda3/envs/viz/bin/python rsm_monitor.py
+rsm_monitor --config epiq_monitor.toml
 ```
 
 ## Configuration
 
-Per-beamtime settings live in `epiq_monitor.toml` (beside this script). Edit
+Per-beamtime settings live in a user-created `epiq_monitor.toml`. Copy
+`examples/epiq_monitor.toml` and edit
 it once per beamtime instead of changing the code -- paths, the Python
 interpreter that runs autoRSM, the polling interval, etc.:
 
@@ -24,7 +25,7 @@ interpreter that runs autoRSM, the polling interval, etc.:
 base_dir   = "/nfs/chess/id4b/2024-2/gregory-3864-b/raw6M/"
 output_dir = "/nfs/chess/id4baux/2024-2/gregory-3864-b/processed/output/"
 python     = "/nfs/chess/user/YOURUSER/anaconda3/bin/python"
-autorsm    = "HKL_Convert/autoRSM.py"   # relative paths resolve from the repo
+# The packaged autoRSM module is used unless --autorsm overrides it.
 interval   = 60
 ```
 
@@ -38,7 +39,7 @@ Point at a different config with `--config /path/to/file.toml`. Override any
 single value at launch without touching the file:
 
 ```bash
-python rsm_monitor.py \
+rsm_monitor \
   --base-dir /path/to/raw6M \
   --spec-dir /path/to/spec/files \
   --output-dir /path/to/output \
@@ -181,19 +182,27 @@ Lengths are in angstrom and angles in degrees.
 
 - Python 3.10+
 - NumPy, SciPy, scikit-learn
-- PyQt6
+- QtPy plus one of PyQt5, PyQt6, PySide2 (Qt 5), or PySide6
 - nexusformat
 - pyFAI and fabio
 - silx
 
-`hklBen.py` loads the included `libhklBen.so` relative to this directory.
-Rebuild with `make` if moving to a machine with an incompatible architecture.
+The monitor itself does not require napari. A minimal Qt 6 installation is:
+
+```bash
+python -m pip install "EpiQ-Map[qt6]"
+```
+
+Equivalent binding extras are `qt5`, `pyside2`, and `pyside6`. PySide2 is
+the Qt 5 package name; there is no package named PySide5.
+
+The native `hklBen` kernel is included in platform wheels. For a source
+checkout, build it with `python -m build` or `python -m pip install -e .`.
 
 ## Tests
 
 ```bash
 cd wrapper3
-/home/as3689/miniconda3/envs/viz/bin/python -m unittest -v test_wrapper3.py
-QT_QPA_PLATFORM=offscreen /home/as3689/miniconda3/envs/viz/bin/python \
-  rsm_monitor.py --help
+python -m pytest tests/integration/test_monitor_workflow.py
+QT_QPA_PLATFORM=offscreen rsm_monitor --help
 ```

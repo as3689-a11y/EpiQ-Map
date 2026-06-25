@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyQt6 beamtime monitor with substrate indexing and HKL reconstruction.
+"""Qt beamtime monitor with substrate indexing and HKL reconstruction.
 
 Created by Ben Gregory, Timo Fuchs, and Andrej Singer, Cornell University.
 """
@@ -16,16 +16,12 @@ import shutil
 import subprocess
 import sys
 import traceback
+from importlib.resources import files
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
-# This process is PyQt6. rsm_viewer_CTR imports Qt through qtpy (so it can also
-# run inside the PyQt5 napari viewer), so pin qtpy to PyQt6 before importing it,
-# otherwise qtpy would default to PyQt5 and mix bindings in this process.
-os.environ.setdefault('QT_API', 'pyqt6')
-
-import rsm_workflow as workflow
-import rsm_viewer_CTR as ctr
+from . import rsm_workflow as workflow
+from . import rsm_viewer_ctr as ctr
 
 
 def autorsm_command(opts, config_path):
@@ -36,18 +32,36 @@ def autorsm_command(opts, config_path):
     and indexed (U/UB) maps with optional custom ranges; which one runs is
     decided by the keys present in ``config_path``.
     """
-    return [opts['python'], opts['autorsm'], config_path]
+    return _python_command(opts['python'], opts['autorsm'], config_path)
 
 
 def make_log_files_command(opts):
     """Command to (re)build the per-scan config/log files: walk the raw tree
     and read the SPEC file to identify and classify scans. Discovery only --
     it writes log files, it does not convert anything."""
-    return [opts['python'], opts['make_log_files'],
-            '--base-dir', opts['base_dir'], '--spec-dir', opts['spec_dir'],
-            '--output-dir', opts['output_dir'], '--poni-file', opts['poni_file'],
-            '--mask-file', opts['mask_file'],
-            '--max-intensity', repr(opts['max_intensity'])]
+    return _python_command(
+        opts['python'], opts['make_log_files'],
+        '--base-dir', opts['base_dir'], '--spec-dir', opts['spec_dir'],
+        '--output-dir', opts['output_dir'], '--poni-file', opts['poni_file'],
+        '--mask-file', opts['mask_file'],
+        '--max-intensity', repr(opts['max_intensity']))
+
+
+def _python_command(python, target, *args):
+    """Build a command for either a module target or an external script."""
+    if target.startswith('-m '):
+        return [python, '-m', target[3:].strip(), *args]
+    return [python, target, *args]
+
+
+def _dialog_exec(dialog):
+    """Run a modal dialog across Qt 5 and Qt 6 bindings."""
+    return dialog.exec_()
+
+
+def _application_exec(app):
+    """Run the Qt event loop across Qt 5 and Qt 6 bindings."""
+    return app.exec_()
 
 
 # autoRSM reports per-frame progress with tqdm, whose bars look like
@@ -117,6 +131,8 @@ def validate_opts(opts):
     for key in ('poni_file', 'mask_file', 'autorsm', 'autorsm_rods',
                 'make_log_files', 'lattice_file'):
         path = opts.get(key)
+        if path and path.startswith('-m '):
+            continue
         if path and not os.path.isfile(path):
             problems.append(f'{key}: file not found: {path}')
     # The interpreter: a bare name is resolved on PATH; a path must exist.
@@ -290,10 +306,10 @@ class Dataset:
 
 
 class TaskSignals(QtCore.QObject):
-    status = QtCore.pyqtSignal(str)
-    success = QtCore.pyqtSignal(object)
-    error = QtCore.pyqtSignal(str)
-    finished = QtCore.pyqtSignal()
+    status = QtCore.Signal(str)
+    success = QtCore.Signal(object)
+    error = QtCore.Signal(str)
+    finished = QtCore.Signal()
 
 
 class FunctionTask(QtCore.QRunnable):
@@ -302,7 +318,7 @@ class FunctionTask(QtCore.QRunnable):
         self.function = function
         self.signals = TaskSignals()
 
-    @QtCore.pyqtSlot()
+    @QtCore.Slot()
     def run(self):
         try:
             result = self.function(self.signals.status.emit)
@@ -338,8 +354,8 @@ class IndexDialog(QtWidgets.QDialog):
         self.save_ub.setChecked((initial or {}).get('save_scaled_ub', True))
         form.addRow('', self.save_ub)
         buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok |
-            QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+            QtWidgets.QDialogButtonBox.Ok |
+            QtWidgets.QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
@@ -449,8 +465,8 @@ class DimensionsDialog(QtWidgets.QDialog):
         self._update_state()
 
         buttons = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok |
-            QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+            QtWidgets.QDialogButtonBox.Ok |
+            QtWidgets.QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept_checked)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -509,17 +525,17 @@ class DimensionsDialog(QtWidgets.QDialog):
 
 
 class WatcherWorker(QtCore.QObject):
-    datasets_updated = QtCore.pyqtSignal(list)
-    status = QtCore.pyqtSignal(str)
-    progress = QtCore.pyqtSignal(int, str)
-    finished = QtCore.pyqtSignal()
+    datasets_updated = QtCore.Signal(list)
+    status = QtCore.Signal(str)
+    progress = QtCore.Signal(int, str)
+    finished = QtCore.Signal()
 
     def __init__(self, opts):
         super().__init__()
         self.opts = opts
         self.stopped = False
 
-    @QtCore.pyqtSlot()
+    @QtCore.Slot()
     def stop(self):
         self.stopped = True
 
@@ -598,7 +614,7 @@ class WatcherWorker(QtCore.QObject):
                 f'Auto-index scan {ds.scan_number}: {match["reason"]}; '
                 'manual choice required')
 
-    @QtCore.pyqtSlot()
+    @QtCore.Slot()
     def run(self):
         opts = self.opts
         while not self.stopped:
@@ -649,10 +665,10 @@ class WatcherWorker(QtCore.QObject):
 
 
 class MonitorWindow(QtWidgets.QMainWindow):
-    stop_watcher = QtCore.pyqtSignal()
+    stop_watcher = QtCore.Signal()
     # Progress from a manual reconstruction (runs on the thread pool); the
     # watcher has its own progress signal. Both drive the bottom progress bar.
-    conversion_progress = QtCore.pyqtSignal(int, str)
+    conversion_progress = QtCore.Signal(int, str)
     COLUMNS = ('Dataset', 'Scan done', 'Config', 'Output', 'Convert',
                'Index / U', 'Reconstruct')
 
@@ -746,18 +762,18 @@ class MonitorWindow(QtWidgets.QMainWindow):
         self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
         self.table.horizontalHeader().setSectionResizeMode(
-            0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+            0, QtWidgets.QHeaderView.Stretch)
         for column in range(1, len(self.COLUMNS)):
             self.table.horizontalHeader().setSectionResizeMode(
-                column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+                column, QtWidgets.QHeaderView.ResizeToContents)
         self.table.setEditTriggers(
-            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            QtWidgets.QAbstractItemView.NoEditTriggers)
         # Row multi-select so a group of scans can be picked for CTR rods
         # (click the Dataset column; the action columns hold buttons).
         self.table.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+            QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+            QtWidgets.QAbstractItemView.ExtendedSelection)
         layout.addWidget(self.table)
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -905,7 +921,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
 
     def _check_item(self, yes):
         item = QtWidgets.QTableWidgetItem('yes' if yes else '-')
-        item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        item.setTextAlignment(QtCore.Qt.AlignCenter)
         item.setForeground(QtGui.QColor('#27ae60' if yes else '#888888'))
         return item
 
@@ -955,7 +971,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         layout.addWidget(label)
         button = QtWidgets.QToolButton()
         button.setText('Actions')
-        button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         # Per-scan indexing stays available while the watcher runs (see
         # _start_task): it only touches already-converted scans.
         button.setEnabled(bool(ds.resolved_output()) and not self.busy)
@@ -1021,7 +1037,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
 
     def find_u(self, ds, initial=None):
         dialog = IndexDialog(list(self.lattices), self, initial=initial)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        if _dialog_exec(dialog) != QtWidgets.QDialog.Accepted:
             return
         try:
             substrate, normal, save_ub = dialog.values()
@@ -1085,11 +1101,11 @@ class MonitorWindow(QtWidgets.QMainWindow):
                 self, 'U_S required',
                 'Dimensions / Run uses a substrate-derived U_S record. '
                 'No U_S exists for this scan. Find one now?')
-            if answer == QtWidgets.QMessageBox.StandardButton.Yes:
+            if answer == QtWidgets.QMessageBox.Yes:
                 self.find_u(ds)
             return
         dialog = DimensionsDialog(records, self)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        if _dialog_exec(dialog) != QtWidgets.QDialog.Accepted:
             return
         try:
             (metadata, matrix_type, custom_grid, ranges, shape, tag,
@@ -1174,7 +1190,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
             return
         dialog = DimensionsDialog(datasets[0].metadata_records(), self,
                                   batch=True)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        if _dialog_exec(dialog) != QtWidgets.QDialog.Accepted:
             return
         try:
             (_metadata, matrix_type, custom_grid, ranges, shape, tag,
@@ -1235,7 +1251,7 @@ class MonitorWindow(QtWidgets.QMainWindow):
         dialog = ctr.CTRDialog(datasets, list(self.lattices), self,
                                lattice_file=self.opts['lattice_file'],
                                default_normal=workflow.DEFAULT_NORMAL)
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        if _dialog_exec(dialog) != QtWidgets.QDialog.Accepted:
             return
         spec = dialog.values()
 
@@ -1256,8 +1272,8 @@ class MonitorWindow(QtWidgets.QMainWindow):
                 spec['k_points'], spec['l_range'], spec['l_points'],
                 spec['output_tag'], max_intensity=self.opts['max_intensity'],
                 orientation=spec['orientation'])
-            command = [self.opts['python'], self.opts['autorsm_rods'],
-                       config_path]
+            command = _python_command(
+                self.opts['python'], self.opts['autorsm_rods'], config_path)
             command_text = shlex.join(command)
             status(f"Reconstructing {len(spec['pairs'])} rod(s) from scans "
                    f"{scan_list} ...")
@@ -1331,29 +1347,29 @@ class MonitorWindow(QtWidgets.QMainWindow):
 
 
 def default_opts():
-    here = os.path.dirname(os.path.abspath(__file__))
     run_label = re.sub(r'[^A-Za-z0-9_.-]+', '-', getpass.getuser())
     return {
-        'base_dir': '/nfs/chess/id4b/2026-2/sarker-4910-a/raw6M/',
-        'spec_dir': '/nfs/chess/id4b/2026-2/sarker-4910-a/',
-        'output_dir': '/nfs/chess/id4baux/2026-2/sarker-4910-a/processed/output/',
-        'poni_file': '/nfs/chess/id4baux/2026-2/sarker-4910-a/calibrations/ceO2_15keV.poni',
-        'mask_file': '/nfs/chess/id4baux/2026-2/sarker-4910-a/calibrations/mask.edf',
+        'base_dir': '',
+        'spec_dir': '',
+        'output_dir': '',
+        'poni_file': '',
+        'mask_file': '',
         'interval': 60,
         # Frames whose peak (unmasked) intensity exceeds this are dropped from
         # the reconstruction -- a detector overload would otherwise smear a
         # saturation halo across the map.
         'max_intensity': 1e5,
         'run_label': run_label,
-        'python': '/nfs/chess/user/ss3428/anaconda3_jpcr/bin/python',
-        'make_log_files': os.path.join(here, 'make_log_files.py'),
-        # autoRSM ships bundled in HKL_Convert/ so the monitor is self-contained
+        'python': sys.executable,
+        'make_log_files': '-m epiq_map.make_log_files',
+        # autoRSM ships as a package module so the monitor is self-contained
         # wherever the repo is deployed; override with --autorsm if it lives
         # elsewhere on the beamtime server. The python interpreter is separate.
-        'autorsm': os.path.join(here, 'HKL_Convert', 'autoRSM.py'),
-        # CTR multi-rod driver, bundled alongside autoRSM in HKL_Convert/.
-        'autorsm_rods': os.path.join(here, 'HKL_Convert', 'autoRSM_rods.py'),
-        'lattice_file': os.path.join(here, 'substrate_lattice_constants.txt'),
+        'autorsm': '-m epiq_map.hkl_convert.auto_rsm',
+        # CTR multi-rod driver, bundled alongside autoRSM.
+        'autorsm_rods': '-m epiq_map.hkl_convert.auto_rsm_rods',
+        'lattice_file': str(files("epiq_map.substrates").joinpath(
+            "substrate_lattice_constants.txt")),
     }
 
 
@@ -1369,18 +1385,20 @@ def _load_toml(path):
 
 def load_config(path=None):
     """Read monitor settings from a TOML file (defaults to epiq_monitor.toml
-    next to this script). Returns {} if no config is present and none was
-    explicitly requested. Relative path values resolve from the repo dir."""
-    here = os.path.dirname(os.path.abspath(__file__))
+    in the current directory). Returns {} if no config is present and none was
+    explicitly requested. Relative paths resolve from the config directory."""
     if path is None:
-        path = os.path.join(here, 'epiq_monitor.toml')
+        path = os.path.abspath('epiq_monitor.toml')
         if not os.path.exists(path):
             return {}
+    else:
+        path = os.path.abspath(path)
+    here = os.path.dirname(path)
     data = _load_toml(path)
     unknown = set(data) - set(default_opts())
     if unknown:
         raise ValueError(f"unknown config keys in {path}: {sorted(unknown)}")
-    # Resolve relative path-like values against the repo directory. A bare
+    # Resolve relative path-like values against the config directory. A bare
     # command name (no path separator, e.g. "python") is left alone so it is
     # found on PATH -- only things that look like relative paths are joined.
     for key in ('python', 'autorsm', 'autorsm_rods', 'make_log_files',
@@ -1388,7 +1406,7 @@ def load_config(path=None):
                 'poni_file', 'mask_file'):
         val = data.get(key)
         if (isinstance(val, str) and val and not os.path.isabs(val)
-                and os.sep in val):
+                and ('/' in val or '\\' in val)):
             data[key] = os.path.join(here, val)
     return data
 
@@ -1397,8 +1415,8 @@ def parse_args(argv=None):
     # Precedence: built-in defaults < config file < command-line flags.
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument('--config', default=None,
-                     help='TOML config file (default: epiq_monitor.toml beside '
-                          'this script)')
+                     help='TOML config file (default: epiq_monitor.toml in '
+                          'the current directory)')
     pre_args, _ = pre.parse_known_args(argv)
 
     opts = default_opts()
@@ -1425,7 +1443,7 @@ def main(argv=None):
     app = QtWidgets.QApplication([sys.argv[0]])
     window = MonitorWindow(opts)
     window.show()
-    return app.exec()
+    return _application_exec(app)
 
 
 if __name__ == '__main__':

@@ -14,9 +14,9 @@ from pathlib import Path
 
 import numpy as np
 
-import rsm_workflow as workflow
-import Visualize_RSM_Lib as rl
-from Visualize_RSM_Lib import orthonormalize, reciprocal_matrix
+from epiq_map import rsm_workflow as workflow
+from epiq_map import visualize_rsm_lib as rl
+from epiq_map.visualize_rsm_lib import orthonormalize, reciprocal_matrix
 
 # The rod NeXus loaders need a recent nexusformat (with nxsetconfig, as load_rsm
 # uses); skip those tests on the older acquisition-env nexusformat that lacks it.
@@ -28,9 +28,9 @@ except Exception:
     HAVE_NEXUS = False
 
 # The dialog helpers (peak_rows, compute_projection) are pure numpy but live in
-# the Qt module; skip those tests where PyQt6 is not installed.
+# the Qt module; skip those tests where no QtPy-supported binding is installed.
 try:
-    import rsm_viewer_CTR as ctr
+    from epiq_map import rsm_viewer_ctr as ctr
     HAVE_CTR = True
 except Exception:
     ctr = None
@@ -39,13 +39,13 @@ except Exception:
 # The rod driver pulls in fabio/pyFAI/spec2nexus and the compiled kernel; skip
 # those tests gracefully where that stack is not installed.
 try:
-    from HKL_Convert import autoRSM_rods            # noqa: F401
+    from epiq_map.hkl_convert import auto_rsm_rods
+    autoRSM_rods = auto_rsm_rods
     HAVE_RODS = True
 except Exception:
     try:
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent / 'HKL_Convert'))
-        import autoRSM_rods                          # noqa: F401
+        from epiq_map.hkl_convert import auto_rsm_rods
+        autoRSM_rods = auto_rsm_rods
         HAVE_RODS = True
     except Exception:
         autoRSM_rods = None
@@ -267,7 +267,7 @@ class RodGridTest(unittest.TestCase):
     def test_kernel_clips_to_rod_and_bins(self):
         """A tight rod grid is self-clipping: HKLHIST drops pixels outside its
         bounds (other rods, out-of-L) and bins in-bounds ones correctly."""
-        import hklBen
+        from epiq_map.hkl_convert import hkl_ben
         nH = nK = 11
         nL = 21
         H = np.linspace(-0.1, 0.1, nH)
@@ -283,13 +283,13 @@ class RodGridTest(unittest.TestCase):
         counts = np.ones(len(pts), dtype=np.float32)
         data = np.zeros(nH * nK * nL, dtype=np.float32)
         norm = np.zeros_like(data)
-        hklBen.HKLHIST(q, np.eye(3), counts, H, K, L, data, norm)
+        hkl_ben.HKLHIST(q, np.eye(3), counts, H, K, L, data, norm)
         self.assertEqual(int(norm.sum()), 2)
         filled = np.argwhere(data.reshape(nH, nK, nL) > 0).tolist()
         self.assertEqual(filled, [[5, 5, 10], [7, 2, 5]])
 
 
-@unittest.skipUnless(HAVE_CTR, 'rsm_viewer_CTR (PyQt6) not importable')
+@unittest.skipUnless(HAVE_CTR, 'rsm_viewer_ctr (Qt binding) not importable')
 class CTRHelpersTest(unittest.TestCase):
     """peak_rows and compute_projection -- the dialog's GUI-free helpers."""
 
@@ -333,7 +333,7 @@ class CTRHelpersTest(unittest.TestCase):
         self.assertEqual(ctr._format_direction([0, 0, -1]), '[0 0 -1]')
 
 
-@unittest.skipUnless(HAVE_CTR, 'rsm_viewer_CTR (PyQt6) not importable')
+@unittest.skipUnless(HAVE_CTR, 'rsm_viewer_ctr (Qt binding) not importable')
 class RodBoxTest(unittest.TestCase):
     """rod_projections / integrate_rod -- the box viewer's GUI-free helpers."""
 

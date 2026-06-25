@@ -6,22 +6,20 @@ import unittest
 
 import numpy as np
 
-import rsm_monitor
-import rsm_workflow as workflow
+from epiq_map import rsm_monitor
+from epiq_map import rsm_workflow as workflow
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LATTICES = os.path.join(HERE, 'substrate_lattice_constants.txt')
+LATTICES = rsm_monitor.default_opts()['lattice_file']
 
-# The acquisition stack (autoRSM + hklBen + libhklBen.so) lives in HKL_Convert,
-# populated separately. Tests that need it are skipped until it is in place.
-sys.path.insert(0, os.path.join(HERE, 'HKL_Convert'))
+# Acquisition tests are skipped when optional runtime dependencies are absent.
 try:
-    import autoRSM
-except ImportError:
+    from epiq_map.hkl_convert import auto_rsm as autoRSM
+except (ImportError, OSError):
     autoRSM = None
 
 requires_autorsm = unittest.skipIf(
-    autoRSM is None, 'autoRSM acquisition stack not present in HKL_Convert/')
+    autoRSM is None, 'autoRSM acquisition dependencies are not installed')
 
 
 class Wrapper3Tests(unittest.TestCase):

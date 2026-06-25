@@ -46,8 +46,8 @@ import tqdm
 from nexusformat.nexus import NXdata, NXentry, NXfield, NXroot, nxsetmemory
 from spec2nexus.spec import SpecDataFile
 
-import hklBen
-import autoRSM           # shared frame machinery (same folder)
+from . import hkl_ben
+from . import auto_rsm
 
 nxsetmemory(8000)
 
@@ -173,7 +173,7 @@ def transform_scan_rods(scan_num, image_dir, geom, cfg, rods, L, UB):
     unmasked = ~mask_bool
     max_intensity = cfg.get('Max Intensity')
 
-    imgfiles = autoRSM.list_images(image_dir)
+    imgfiles = auto_rsm.list_images(image_dir)
     scan = SpecDataFile(cfg['Specfile']).getScan(scan_num)
     phi = np.asarray(scan.data['phi'])
     chi = float(scan.positioner['chi'])
@@ -188,19 +188,19 @@ def transform_scan_rods(scan_num, image_dir, geom, cfg, rods, L, UB):
     nframes = min(len(imgfiles), len(phi))
 
     overloaded = 0
-    frames = autoRSM.iter_frames(image_dir, imgfiles[:nframes])
+    frames = auto_rsm.iter_frames(image_dir, imgfiles[:nframes])
     for i, img in enumerate(tqdm.tqdm(frames, total=nframes,
                                       desc=f"scan {scan_num}")):
         if icnorm[i] <= 0.0:
             continue
-        if autoRSM.is_overloaded(img, unmasked, max_intensity):
+        if auto_rsm.is_overloaded(img, unmasked, max_intensity):
             overloaded += 1
             continue
-        counts = autoRSM.make_counts(img, mask_bool, inv_solidangle, icnorm[i])
-        M = hklBen.rotation_matrix(eta, chi, phi[i], UB)
+        counts = auto_rsm.make_counts(img, mask_bool, inv_solidangle, icnorm[i])
+        M = hkl_ben.rotation_matrix(eta, chi, phi[i], UB)
         for rod in rods:
-            hklBen.HKLHIST(q, M, counts, rod['H'], rod['K'], L,
-                           rod['data'], rod['norm'])
+            hkl_ben.HKLHIST(q, M, counts, rod['H'], rod['K'], L,
+                            rod['data'], rod['norm'])
     if overloaded:
         print(f"scan {scan_num}: skipped {overloaded} overloaded frame(s) "
               f"(peak > {max_intensity:g})")
@@ -275,7 +275,7 @@ def main():
     print(f"L: [{L[0]:.4f}, {L[-1]:.4f}]")
 
     # Frame-independent detector geometry, computed once.
-    q = hklBen.detector_q(poni)
+    q = hkl_ben.detector_q(poni)
     inv_solidangle = (1.0 / poni.solidAngleArray()).astype(np.float32).ravel()
     geom = (q, inv_solidangle, poni.twoThetaArray())
 
