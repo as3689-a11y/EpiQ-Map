@@ -28,20 +28,20 @@ jobs:
             cibw_archs: "x86_64 arm64"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
 
-      - uses: pypa/cibuildwheel@v3.1
+      - uses: pypa/cibuildwheel@v4.1.0
         env:
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
           CIBW_TEST_COMMAND: >-
             python -c "from epiq_map.hkl_convert import hkl_ben;
             print(hkl_ben.rotation_matrix(0, 0, 0, __import__('numpy').eye(3)))"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: wheels-${{ runner.os }}
           path: wheelhouse/*.whl
@@ -51,11 +51,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6.3.0
         with:
           python-version: "3.x"
 
@@ -65,7 +65,7 @@ jobs:
           python -m build --sdist
           python -m twine check dist/*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -80,17 +80,17 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: wheels-*
           path: dist
           merge-multiple: true
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: sdist
           path: dist
@@ -111,9 +111,9 @@ jobs:
           Path("release-notes.md").write_text(
               match.group(0).strip() + "\n", encoding="utf-8")
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3.0.1
         with:
           body_path: release-notes.md
           files: dist/*
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@v1.9.0

@@ -197,8 +197,36 @@ python -m twine check dist/*
 
 No Makefile or hand-copied shared library is needed. Linux wheels use OpenMP,
 Windows wheels use MSVC OpenMP, and macOS wheels use a portable serial fallback.
-Tagging a release as `vX.Y.Z` runs `.github/workflows/release.yml`, builds
-CPython wheels for common Linux, Windows, Intel macOS, and Apple Silicon
-targets, creates a GitHub release, and publishes to PyPI using trusted
-publishing. Add a matching `## [X.Y.Z]` section to `CHANGELOG.md` before
-creating the tag.
+The regular CI workflow in `.github/workflows/build.yml` installs the package
+with the `test` and `qt6` extras, checks the console entry points, runs
+`tests/unit`, builds the wheel and source distribution, and runs
+`twine check`.
+
+Release checklist:
+
+1. Move the intended changes from `## [Unreleased]` into a dated
+   `## [X.Y.Z] - YYYY-MM-DD` section in `CHANGELOG.md`. The release workflow
+   extracts this section for the GitHub release notes and fails if it is
+   missing.
+2. Verify the distributions locally:
+
+   ```bash
+   python -m pip install --upgrade build twine
+   python -m build
+   python -m twine check dist/*
+   ```
+
+3. Commit the changelog and release-ready packaging changes.
+4. Create and push a version tag:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+Pushing the tag runs `.github/workflows/release.yml`. That workflow builds
+CPython 3.10-3.14 wheels with `cibuildwheel` for Linux x86-64, Windows AMD64,
+Intel macOS, and Apple Silicon macOS, builds and checks the source
+distribution, creates a GitHub release with the changelog section as the body,
+and publishes all artifacts to PyPI using trusted publishing from the `pypi`
+environment.

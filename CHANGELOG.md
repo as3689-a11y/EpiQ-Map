@@ -4,6 +4,9 @@ All notable changes to EpiQ-Map are documented here.
 
 ## [Unreleased]
 
+- Add CPython 3.14 CI and release wheels.
+- Update GitHub Actions and cibuildwheel versions.
+
 ## [0.1.0] - 2026-06-25
 
 Initial packaged release of EpiQ-Map.
